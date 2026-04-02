@@ -1,0 +1,48 @@
+# kblens.yaml — example project configuration
+#
+# Place this in your project root directory.
+# LLM settings can go in ~/.config/kblens/config.yaml (shared across projects).
+# Sensitive values (API keys) go in kblens.local.yaml (gitignored).
+
+version: 1
+project: "my_project"
+
+output_dir: "~/kblens_kb/my_project"
+
+sources:
+  - path: "/absolute/path/to/source1"
+    name: "source1"
+  - path: "/absolute/path/to/source2"
+    name: "source2"
+
+# "auto" = detect from source; or explicit: ["*.h", "*.cpp"]
+include_extensions: "auto"
+
+exclude_patterns:
+  - "*/test/*"
+  - "*/tests/*"
+  - "*/mock/*"
+  - "*/mocks/*"
+  - "*_test.*"
+  - "*.test.*"
+  - "**/node_modules/**"
+  - "**/__pycache__/**"
+  - "**/vendor/**"
+  - "**/third_party/**"
+
+# LLM settings (can also be in ~/.config/kblens/config.yaml)
+llm:
+  model: "gpt-4o-mini"
+  # api_base: "https://api.openai.com/v1"
+  # api_key_env: "OPENAI_API_KEY"
+  temperature: 0.2
+  max_concurrent: 8
+  max_concurrent_components: 8
+
+packing:
+  token_budget: 8000
+  token_min: 1000
+  token_max: 24000
+  component_split_threshold: 200
+
+summary_language: "en"

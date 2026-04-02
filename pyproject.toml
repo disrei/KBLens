@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kblens"
+version = "0.1.0"
+description = "Progressive-disclosure code knowledge base generator"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "KBLens Contributors"}]
+
+dependencies = [
+    "tree-sitter>=0.23",
+    "tree-sitter-cpp>=0.23",
+    "litellm>=1.0",
+    "typer>=0.12",
+    "pyyaml>=6.0",
+    "tiktoken>=0.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+kblens = "kblens.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
