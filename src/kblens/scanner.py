@@ -39,12 +39,19 @@ def resolve_include_extensions(config: Config) -> set[str]:
                     if ext in SUPPORTED_EXTENSIONS:
                         detected.add(ext)
                     count += 1
-                    if count >= AUTO_DETECT_SAMPLE_LIMIT and len(detected) > 0:
+                    # Only stop early after enough files AND all common C++ exts found
+                    if count >= AUTO_DETECT_SAMPLE_LIMIT and detected >= {".h", ".cpp"}:
                         break
         return detected if detected else DEFAULT_FALLBACK_EXTENSIONS
     else:
-        # Manual list: ["*.h", "*.cpp"] → {".h", ".cpp"}
-        return {e.lstrip("*") for e in config.include_extensions}
+        # Manual list: ["*.h", "*.cpp", ".h", "h"] → {".h", ".cpp"}
+        result: set[str] = set()
+        for e in config.include_extensions:
+            ext = e.lstrip("*")
+            if not ext.startswith("."):
+                ext = f".{ext}"
+            result.add(ext)
+        return result
 
 
 def _matches_exclude(rel_path: str, exclude_patterns: list[str]) -> bool:

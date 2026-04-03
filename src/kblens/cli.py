@@ -891,7 +891,7 @@ async def _run_summarization_live(
                     components=list(comp_dict.values()),
                 )
                 all_pkg_results[pkg_key] = pkg_result
-                package_overviews[pkg_name] = (pkg_overview, source_name)
+                package_overviews[pkg_key] = (pkg_overview, source_name)
 
                 pkg_idx += 1
                 ds.packages_done = pkg_idx
@@ -914,7 +914,7 @@ async def _run_summarization_live(
                 md_path = Path(config.output_dir) / source_name / f"{pkg_name}.md"
                 if md_path.exists():
                     txt = md_path.read_text(encoding="utf-8")
-                    package_overviews[pkg_name] = (txt, source_name)
+                    package_overviews[pkg_key] = (txt, source_name)
 
             try:
                 index_md, in_t, out_t = await phase5d_index(package_overviews, config)

@@ -242,6 +242,12 @@ def cleanup_deleted_components(
             shutil.rmtree(sub_dir)
             logger.info("  Removed dir: %s", sub_dir)
 
+        # Clean up empty package directory
+        pkg_dir = out / source_name / pkg_name
+        if pkg_dir.is_dir() and not any(pkg_dir.iterdir()):
+            pkg_dir.rmdir()
+            logger.info("  Removed empty package dir: %s", pkg_dir)
+
     if deleted_keys:
         meta["total_components"] = len(meta["components"])
         _recompute_meta_aggregates(meta)
