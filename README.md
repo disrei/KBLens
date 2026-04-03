@@ -310,21 +310,30 @@ Each component's identity is a hash of `(relative_path, mtime, size)` for all co
 
 ## Language Support
 
-Currently supports **C++** (`.h`, `.hpp`, `.cpp`, `.cc`, `.cxx`). The AST extraction, packing, and summarization pipeline is language-agnostic — only the tree-sitter parser and extraction logic is language-specific.
+Currently supports:
 
-Other file types are detected during scanning but produce 0 AST tokens and are skipped. Components with fewer than 50 AST tokens are excluded from LLM summarization.
+- **C++** (`.h`, `.hpp`, `.cpp`, `.cc`, `.cxx`) — classes, structs, enums, free functions, templates, supplementary `.cpp` extraction
+- **Python** (`.py`, `.pyi`) — classes with public methods, module-level functions, type-annotated constants, decorators, docstrings, `__all__`; private names (`_prefixed`) are automatically skipped
+
+The AST extraction, packing, and summarization pipeline is language-agnostic — only the tree-sitter parser and extraction logic is language-specific. Mixed-language projects (e.g., C++ engine with Python tooling) work out of the box.
+
+Components with fewer than 50 AST tokens are excluded from LLM summarization.
+
+### Directory Layout
+
+KBLens supports two layout styles:
+
+- **Deep layout** (C++ engine style): `source/package/component/src/*.h` — three directory levels
+- **Flat layout** (Python package style): `source/package/*.py` — package directory contains code files directly
+
+Both are auto-detected during scanning.
 
 ### Roadmap
 
-Support for additional languages is planned. The architecture is ready — adding a new language requires:
+Planned languages:
 
-1. A tree-sitter grammar package (e.g. `tree-sitter-python`)
-2. A language-specific extractor function
-3. Extension mapping in `phase2_extract_ast()`
-
-Planned languages (in priority order):
-
-- [ ] Python
+- [x] C++
+- [x] Python
 - [ ] TypeScript / JavaScript
 - [ ] C#
 - [ ] Java / Kotlin

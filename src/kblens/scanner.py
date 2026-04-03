@@ -170,36 +170,56 @@ def phase1_scan(config: Config, include_exts: set[str] | None = None) -> list[Co
             pkg_name = pkg_path.name
 
             # Components = direct children of package
+            _SKIP_DIRS = {"__pycache__", "node_modules", ".git", "__pypackages__"}
             try:
                 comp_dirs = sorted(
-                    c for c in pkg_path.iterdir() if c.is_dir() and not c.name.startswith(".")
+                    c
+                    for c in pkg_path.iterdir()
+                    if c.is_dir() and not c.name.startswith(".") and c.name not in _SKIP_DIRS
                 )
             except (OSError, PermissionError):
                 continue
 
-            for comp_dir in comp_dirs:
-                # Check for sub-projects within the component
-                subprojects = detect_subprojects(comp_dir)
+            if comp_dirs:
+                # Standard 3-level layout: source/package/component/
+                for comp_dir in comp_dirs:
+                    # Check for sub-projects within the component
+                    subprojects = detect_subprojects(comp_dir)
 
-                for sp_path in subprojects:
-                    fc, tl = count_code_files(
-                        sp_path, include_exts, config.exclude_patterns, sp_path
-                    )
-                    if fc == 0:
-                        continue
+                    for sp_path in subprojects:
+                        fc, tl = count_code_files(
+                            sp_path, include_exts, config.exclude_patterns, sp_path
+                        )
+                        if fc == 0:
+                            continue
 
-                    # Name: if sub-project, use parent/child naming
-                    if sp_path != comp_dir:
-                        name = f"{comp_dir.name}/{sp_path.name}"
-                    else:
-                        name = comp_dir.name
+                        # Name: if sub-project, use parent/child naming
+                        if sp_path != comp_dir:
+                            name = f"{comp_dir.name}/{sp_path.name}"
+                        else:
+                            name = comp_dir.name
 
+                        components.append(
+                            Component(
+                                source_name=source.name,
+                                package_name=pkg_name,
+                                name=name,
+                                path=sp_path,
+                                file_count=fc,
+                                total_lines=tl,
+                            )
+                        )
+            else:
+                # Flat layout fallback: package dir itself contains code files
+                # (common in Python projects: src/mypackage/*.py)
+                fc, tl = count_code_files(pkg_path, include_exts, config.exclude_patterns, pkg_path)
+                if fc > 0:
                     components.append(
                         Component(
                             source_name=source.name,
                             package_name=pkg_name,
-                            name=name,
-                            path=sp_path,
+                            name=pkg_name,
+                            path=pkg_path,
                             file_count=fc,
                             total_lines=tl,
                         )

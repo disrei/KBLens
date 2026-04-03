@@ -310,21 +310,30 @@ kblens status
 
 ## 语言支持
 
-目前支持 **C++**（`.h`、`.hpp`、`.cpp`、`.cc`、`.cxx`）。AST 提取、打包和摘要管线本身与语言无关——仅 tree-sitter 解析器和提取逻辑是语言特定的。
+目前支持：
 
-其他文件类型在扫描时会被检测到，但产生 0 个 AST token 并被跳过。AST token 少于 50 的组件不会进行 LLM 摘要。
+- **C++**（`.h`、`.hpp`、`.cpp`、`.cc`、`.cxx`）— 类、结构体、枚举、自由函数、模板、补充 `.cpp` 提取
+- **Python**（`.py`、`.pyi`）— 类及公共方法、模块级函数、类型标注常量、装饰器、docstring、`__all__`；私有名称（`_` 前缀）自动跳过
+
+AST 提取、打包和摘要管线本身与语言无关——仅 tree-sitter 解析器和提取逻辑是语言特定的。混合语言项目（如 C++ 引擎 + Python 工具链）开箱即用。
+
+AST token 少于 50 的组件不会进行 LLM 摘要。
+
+### 目录布局
+
+KBLens 支持两种布局风格：
+
+- **深层布局**（C++ 引擎风格）：`source/package/component/src/*.h` — 三级目录
+- **扁平布局**（Python 包风格）：`source/package/*.py` — 包目录直接包含代码文件
+
+扫描时自动检测。
 
 ### 路线图
 
-计划支持更多语言。架构层面已经就绪——添加新语言只需：
+计划支持的语言：
 
-1. tree-sitter 语法包（如 `tree-sitter-python`）
-2. 语言特定的提取函数
-3. 在 `phase2_extract_ast()` 中添加扩展名映射
-
-计划支持的语言（按优先级排序）：
-
-- [ ] Python
+- [x] C++
+- [x] Python
 - [ ] TypeScript / JavaScript
 - [ ] C#
 - [ ] Java / Kotlin
