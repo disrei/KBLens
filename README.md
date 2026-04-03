@@ -6,9 +6,9 @@ A progressive-disclosure code knowledge base generator for large C++ codebases. 
 
 ## Why KBLens
 
-Large codebases (100K+ files) are too big for LLMs to consume directly. Without structured context, AI assistants either hallucinate or say "I don't know" when asked about internal systems.
+When doing **vibe coding** — using AI assistants (Cursor, Copilot, OpenCode, etc.) to write and refactor code through natural language — the AI needs to understand your codebase's architecture. But large codebases (100K+ files) are too big for LLMs to consume directly. Without structured context, AI assistants either hallucinate or say "I don't know" when asked about internal systems.
 
-KBLens solves this by generating a **three-layer knowledge base**:
+KBLens solves this by generating a **three-layer knowledge base** from your actual source code:
 
 ```
 L0  INDEX.md            Project overview + package directory
@@ -16,7 +16,7 @@ L1  packages/engine.md  Per-package component listing and architecture
 L2  packages/engine/    Per-component: purpose, key types, public APIs, dependencies
 ```
 
-This gives AI assistants a reliable, searchable reference — like an always-up-to-date architecture document generated from actual code.
+This gives AI assistants a reliable, searchable reference — like an always-up-to-date architecture document generated from actual code. Point your AI tool at the knowledge base, and it can answer questions like "how does the physics system work?" or "what's the public API of SmartDrive?" without reading every source file.
 
 ## Key Features
 
@@ -41,7 +41,7 @@ This gives AI assistants a reliable, searchable reference — like an always-up-
 ## Installation
 
 ```bash
-# From PyPI (when published)
+# From PyPI
 pip install kblens
 
 # Or install from GitHub directly
@@ -260,18 +260,66 @@ KBLens runs a six-phase pipeline for each source:
 
 ### Incremental Behavior
 
+KBLens is designed for daily use in active development. Just re-run `kblens generate` after code changes — it will figure out what needs updating.
+
 On subsequent runs:
 
-- **Unchanged components** are skipped entirely (hash match)
+- **Unchanged components** are skipped entirely (hash match based on file path + mtime + size)
 - **Changed components** are regenerated, and their package's L1 overview is updated
 - **New components** are generated and added to the package overview
 - **Deleted components** have their `.md` files and metadata cleaned up
 - **Failed components** (from previous timeout/errors) are automatically retried
+- **Skipped components** (< 100 AST tokens) are recorded in metadata to avoid re-scanning
 - **L0 INDEX** is regenerated only if any package changed
+
+#### Typical workflow
+
+```bash
+# First run: full generation (~5 min for 200 components)
+kblens generate
+
+# ... make code changes ...
+
+# Subsequent run: only changed components regenerated (~seconds)
+kblens generate
+
+# Check what's in the knowledge base
+kblens status
+```
+
+#### How change detection works
+
+Each component's identity is a hash of `(relative_path, mtime, size)` for all code files. When you re-run `kblens generate`:
+
+1. **Scan** discovers all current components
+2. **Compare** each component's hash against `_meta.json`
+3. Components with matching hash → skip. Mismatched or missing → regenerate.
+4. Components in `_meta.json` but no longer on disk → delete their `.md` files
+5. Only packages containing dirty components get their L1 overview regenerated
+6. L0 INDEX regenerated only if any L1 changed
 
 ## Language Support
 
-Currently supports **C++ only** (`.h`, `.hpp`, `.cpp`, `.cc`, `.cxx`). Other file types are detected during scanning but produce 0 AST tokens and are skipped. Components with fewer than 100 AST tokens are excluded from LLM summarization.
+Currently supports **C++** (`.h`, `.hpp`, `.cpp`, `.cc`, `.cxx`). The AST extraction, packing, and summarization pipeline is language-agnostic — only the tree-sitter parser and extraction logic is language-specific.
+
+Other file types are detected during scanning but produce 0 AST tokens and are skipped. Components with fewer than 100 AST tokens are excluded from LLM summarization.
+
+### Roadmap
+
+Support for additional languages is planned. The architecture is ready — adding a new language requires:
+
+1. A tree-sitter grammar package (e.g. `tree-sitter-python`)
+2. A language-specific extractor function
+3. Extension mapping in `phase2_extract_ast()`
+
+Planned languages (in priority order):
+
+- [ ] Python
+- [ ] TypeScript / JavaScript
+- [ ] C#
+- [ ] Java / Kotlin
+- [ ] Rust
+- [ ] Go
 
 ## AI Assistant Integration
 
