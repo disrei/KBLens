@@ -54,6 +54,9 @@ This gives AI assistants a reliable, searchable reference — like an always-up-
 # From PyPI
 pip install kblens
 
+# Upgrade to latest version
+pip install --upgrade kblens
+
 # Or install from GitHub directly
 pip install git+https://github.com/disrei/KBLens.git
 
