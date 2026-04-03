@@ -314,6 +314,8 @@ kblens status
 
 - **C++**（`.h`、`.hpp`、`.cpp`、`.cc`、`.cxx`）— 类、结构体、枚举、自由函数、模板、补充 `.cpp` 提取
 - **Python**（`.py`、`.pyi`）— 类及公共方法、模块级函数、类型标注常量、装饰器、docstring、`__all__`；私有名称（`_` 前缀）自动跳过
+- **TypeScript**（`.ts`、`.tsx`）— 类、接口、类型别名、枚举、导出函数、箭头函数、访问修饰符；`private` 成员和 `_` 前缀名称自动跳过
+- **JavaScript**（`.js`、`.jsx`、`.mjs`、`.cjs`）— 类、导出函数、常量；与 TypeScript 相同的提取逻辑，但无类型标注
 
 AST 提取、打包和摘要管线本身与语言无关——仅 tree-sitter 解析器和提取逻辑是语言特定的。混合语言项目（如 C++ 引擎 + Python 工具链）开箱即用。
 
@@ -334,7 +336,7 @@ KBLens 支持两种布局风格：
 
 - [x] C++
 - [x] Python
-- [ ] TypeScript / JavaScript
+- [x] TypeScript / JavaScript
 - [ ] C#
 - [ ] Java / Kotlin
 - [ ] Rust

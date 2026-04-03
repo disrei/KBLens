@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kblens"
-version = "0.2.0"
+version = "0.2.1"
 description = "Progressive-disclosure code knowledge base generator for large codebases"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{name = "KBLens Contributors"}]
-keywords = ["code-analysis", "knowledge-base", "llm", "tree-sitter", "cpp", "python", "documentation"]
+keywords = ["code-analysis", "knowledge-base", "llm", "tree-sitter", "cpp", "python", "typescript", "javascript", "documentation"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -26,6 +26,8 @@ dependencies = [
     "tree-sitter>=0.23",
     "tree-sitter-cpp>=0.23",
     "tree-sitter-python>=0.23",
+    "tree-sitter-typescript>=0.23",
+    "tree-sitter-javascript>=0.23",
     "litellm>=1.0",
     "typer>=0.12",
     "rich>=13.0",

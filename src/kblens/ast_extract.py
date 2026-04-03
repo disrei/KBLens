@@ -16,7 +16,9 @@ from pathlib import Path
 
 import tree_sitter
 import tree_sitter_cpp
+import tree_sitter_javascript
 import tree_sitter_python
+import tree_sitter_typescript
 
 from .models import ASTEntry, Component, Config
 
@@ -55,6 +57,21 @@ _py_language = tree_sitter.Language(tree_sitter_python.language())
 _py_parser = tree_sitter.Parser(_py_language)
 
 _PY_EXTS = {".py", ".pyi"}
+
+# ---------------------------------------------------------------------------
+# TypeScript / JavaScript extractor
+# ---------------------------------------------------------------------------
+
+_ts_language = tree_sitter.Language(tree_sitter_typescript.language_typescript())
+_tsx_language = tree_sitter.Language(tree_sitter_typescript.language_tsx())
+_js_language = tree_sitter.Language(tree_sitter_javascript.language())
+
+_ts_parser = tree_sitter.Parser(_ts_language)
+_tsx_parser = tree_sitter.Parser(_tsx_language)
+_js_parser = tree_sitter.Parser(_js_language)
+
+_TS_EXTS = {".ts", ".tsx"}
+_JS_EXTS = {".js", ".jsx", ".mjs", ".cjs"}
 
 
 def _py_node_text(node: tree_sitter.Node, source: bytes) -> str:
@@ -286,6 +303,333 @@ def extract_python_file(file_path: Path, source: bytes) -> str:
                 for d in decorators:
                     lines.append(d)
                 lines.extend(_py_extract_class(inner, source))
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# TypeScript / JavaScript extraction helpers
+# ---------------------------------------------------------------------------
+
+
+def _ts_node_text(node: tree_sitter.Node, source: bytes) -> str:
+    return source[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
+
+
+def _ts_is_private(name: str) -> bool:
+    """Check if a TS/JS name is private (_ prefix, but not constructor)."""
+    if name in ("constructor",):
+        return False
+    return name.startswith("_")
+
+
+def _ts_extract_method_sig(node: tree_sitter.Node, source: bytes, indent: str = "  ") -> str | None:
+    """Extract method signature from a method_definition node."""
+    parts: list[str] = []
+    name = ""
+    for child in node.children:
+        if child.type in ("async", "static", "readonly", "override", "abstract"):
+            parts.append(child.type)
+        elif child.type in ("accessibility_modifier",):
+            # public, private, protected
+            text = _ts_node_text(child, source)
+            if text == "private":
+                return None  # skip private methods
+            parts.append(text)
+        elif child.type == "property_identifier":
+            name = _ts_node_text(child, source)
+        elif child.type == "formal_parameters":
+            parts.append(f"{name}{_ts_node_text(child, source)}")
+        elif child.type == "type_annotation":
+            parts.append(_ts_node_text(child, source))
+    if not name:
+        return None
+    if _ts_is_private(name):
+        return None
+    return f"{indent}{' '.join(parts)};"
+
+
+def _ts_extract_class(node: tree_sitter.Node, source: bytes) -> list[str]:
+    """Extract class declaration: name, extends, implements, public members."""
+    lines: list[str] = []
+
+    # Build class header
+    name = ""
+    heritage = ""
+    for child in node.children:
+        if child.type == "type_identifier":
+            name = _ts_node_text(child, source)
+        elif child.type == "class_heritage":
+            heritage = " " + _ts_node_text(child, source)
+
+    lines.append(f"class {name}{heritage} {{")
+
+    body = node.child_by_field_name("body")
+    if not body:
+        lines.append("}")
+        return lines
+
+    for child in body.children:
+        if child.type in ("{", "}"):
+            continue
+
+        if child.type == "method_definition":
+            sig = _ts_extract_method_sig(child, source)
+            if sig:
+                lines.append(sig)
+
+        elif child.type == "public_field_definition":
+            text = _ts_node_text(child, source).strip()
+            # Check for private keyword or _ prefix
+            is_private = False
+            field_name = ""
+            for sub in child.children:
+                if sub.type == "accessibility_modifier" and _ts_node_text(sub, source) == "private":
+                    is_private = True
+                    break
+                if sub.type == "property_identifier":
+                    field_name = _ts_node_text(sub, source)
+            if is_private or _ts_is_private(field_name):
+                continue
+            lines.append(f"  {text};")
+
+    lines.append("}")
+    return lines
+
+
+def _ts_extract_interface(node: tree_sitter.Node, source: bytes) -> list[str]:
+    """Extract interface declaration with all members."""
+    lines: list[str] = []
+    name = ""
+    extends = ""
+    for child in node.children:
+        if child.type == "type_identifier":
+            name = _ts_node_text(child, source)
+        elif child.type == "extends_type_clause":
+            extends = " " + _ts_node_text(child, source)
+
+    lines.append(f"interface {name}{extends} {{")
+
+    # interface_body contains property_signature, method_signature, etc.
+    for child in node.children:
+        if child.type in ("interface_body", "object_type"):
+            for member in child.children:
+                if member.type in ("{", "}", ";", ","):
+                    continue
+                text = _ts_node_text(member, source).strip()
+                if text:
+                    lines.append(f"  {text};")
+            break
+
+    lines.append("}")
+    return lines
+
+
+def _ts_extract_function_sig(node: tree_sitter.Node, source: bytes) -> str | None:
+    """Extract function signature from function_declaration."""
+    name = ""
+    params = ""
+    ret = ""
+    is_async = False
+    for child in node.children:
+        if child.type == "async":
+            is_async = True
+        elif child.type == "identifier":
+            name = _ts_node_text(child, source)
+        elif child.type == "formal_parameters":
+            params = _ts_node_text(child, source)
+        elif child.type == "type_annotation":
+            ret = _ts_node_text(child, source)
+        elif child.type == "type_parameters":
+            name += _ts_node_text(child, source)
+    if not name:
+        return None
+    prefix = "async " if is_async else ""
+    sig = f"{prefix}function {name}{params}"
+    if ret:
+        sig += f"{ret}"
+    return f"{sig};"
+
+
+def _ts_unwrap_export(
+    node: tree_sitter.Node, source: bytes
+) -> tuple[bool, bool, tree_sitter.Node | None]:
+    """Unwrap export_statement, return (is_export, is_default, inner_node)."""
+    if node.type != "export_statement":
+        return False, False, node
+    is_default = False
+    inner = None
+    for child in node.children:
+        if child.type == "export":
+            continue
+        if child.type == "default":
+            is_default = True
+            continue
+        if child.type in (
+            "class_declaration",
+            "abstract_class_declaration",
+            "function_declaration",
+            "interface_declaration",
+            "type_alias_declaration",
+            "enum_declaration",
+            "lexical_declaration",
+        ):
+            inner = child
+            break
+    return True, is_default, inner
+
+
+def extract_ts_js_file(file_path: Path, source: bytes) -> str:
+    """Extract AST skeleton from a TypeScript or JavaScript file.
+
+    Extracts: imports, exports, interfaces, type aliases, enums, classes
+    (with public methods/fields), and module-level functions. Private
+    names (_prefixed) and `private` access modifier members are skipped.
+    """
+    ext = file_path.suffix.lower()
+    if ext == ".tsx":
+        parser = _tsx_parser
+    elif ext in _TS_EXTS:
+        parser = _ts_parser
+    else:
+        parser = _js_parser
+
+    tree = parser.parse(source)
+    root = tree.root_node
+    lines: list[str] = []
+
+    def _process_node(node: tree_sitter.Node, export_prefix: str = "") -> None:
+        ntype = node.type
+
+        if ntype == "import_statement":
+            lines.append(_ts_node_text(node, source).rstrip(";") + ";")
+
+        elif ntype == "export_statement":
+            is_export, is_default, inner = _ts_unwrap_export(node, source)
+            prefix = "export default " if is_default else "export "
+            if inner:
+                _process_node(inner, prefix)
+            else:
+                # re-export: export { ... } from '...'
+                text = _ts_node_text(node, source).strip()
+                if "from" in text:
+                    lines.append(text)
+
+        elif ntype in ("class_declaration", "abstract_class_declaration"):
+            # Get class name
+            cname = ""
+            for child in node.children:
+                if child.type == "type_identifier":
+                    cname = _ts_node_text(child, source)
+                    break
+            if _ts_is_private(cname):
+                return
+            cls_lines = _ts_extract_class(node, source)
+            if export_prefix and cls_lines:
+                cls_lines[0] = export_prefix + cls_lines[0]
+            lines.extend(cls_lines)
+
+        elif ntype == "interface_declaration":
+            iname = ""
+            for child in node.children:
+                if child.type == "type_identifier":
+                    iname = _ts_node_text(child, source)
+                    break
+            if _ts_is_private(iname):
+                return
+            iface_lines = _ts_extract_interface(node, source)
+            if export_prefix and iface_lines:
+                iface_lines[0] = export_prefix + iface_lines[0]
+            lines.extend(iface_lines)
+
+        elif ntype == "type_alias_declaration":
+            text = _ts_node_text(node, source).strip().rstrip(";") + ";"
+            tname = ""
+            for child in node.children:
+                if child.type == "type_identifier":
+                    tname = _ts_node_text(child, source)
+                    break
+            if _ts_is_private(tname):
+                return
+            lines.append(f"{export_prefix}{text}")
+
+        elif ntype == "enum_declaration":
+            text = _ts_node_text(node, source).strip()
+            ename = ""
+            for child in node.children:
+                if child.type == "identifier":
+                    ename = _ts_node_text(child, source)
+                    break
+            if _ts_is_private(ename):
+                return
+            lines.append(f"{export_prefix}{text}")
+
+        elif ntype == "function_declaration":
+            sig = _ts_extract_function_sig(node, source)
+            if sig:
+                fname = ""
+                for child in node.children:
+                    if child.type == "identifier":
+                        fname = _ts_node_text(child, source)
+                        break
+                if _ts_is_private(fname):
+                    return
+                lines.append(f"{export_prefix}{sig}")
+
+        elif ntype == "lexical_declaration":
+            # const/let declarations — extract typed constants
+            text = _ts_node_text(node, source).strip().rstrip(";") + ";"
+            # Check for arrow functions or typed constants
+            for child in node.children:
+                if child.type == "variable_declarator":
+                    vname = ""
+                    for sub in child.children:
+                        if sub.type == "identifier":
+                            vname = _ts_node_text(sub, source)
+                            break
+                    if _ts_is_private(vname):
+                        return
+                    # Only include if it has a type annotation or is an arrow function
+                    has_type = any(s.type == "type_annotation" for s in child.children)
+                    has_arrow = any(s.type == "arrow_function" for s in child.children)
+                    if has_type or has_arrow:
+                        if has_arrow:
+                            # Extract arrow function signature only
+                            for sub in child.children:
+                                if sub.type == "arrow_function":
+                                    params = ""
+                                    ret = ""
+                                    is_async = False
+                                    for asub in sub.children:
+                                        if asub.type == "formal_parameters":
+                                            params = _ts_node_text(asub, source)
+                                        elif asub.type == "type_annotation":
+                                            ret = _ts_node_text(asub, source)
+                                        elif asub.type == "async":
+                                            is_async = True
+                                    aprefix = "async " if is_async else ""
+                                    type_ann = ""
+                                    for sub2 in child.children:
+                                        if sub2.type == "type_annotation":
+                                            type_ann = _ts_node_text(sub2, source)
+                                    kw = (
+                                        "const"
+                                        if "const" in _ts_node_text(node, source)[:6]
+                                        else "let"
+                                    )
+                                    sig = (
+                                        f"{export_prefix}{kw} {vname}{type_ann} = {aprefix}{params}"
+                                    )
+                                    if ret:
+                                        sig += f"{ret}"
+                                    sig += " => ...;"
+                                    lines.append(sig)
+                                    return
+                        lines.append(f"{export_prefix}{text}")
+                    return
+
+    for child in root.children:
+        _process_node(child)
 
     return "\n".join(lines)
 
@@ -862,6 +1206,29 @@ def phase2_extract_ast(
             content=skeleton,
             tokens=estimate_tokens(skeleton),
             language="python",
+        )
+
+    # ---- TypeScript / JavaScript files ----
+    ts_js_files = [f for f in all_files if f.suffix.lower() in (_TS_EXTS | _JS_EXTS)]
+    for f in ts_js_files:
+        try:
+            source = f.read_bytes()
+        except (OSError, PermissionError):
+            continue
+        skeleton = extract_ts_js_file(f, source)
+        if not skeleton.strip():
+            continue
+        rel = str(f.relative_to(comp_path)).replace("\\", "/")
+        dir_part = str(f.parent.relative_to(comp_path)).replace("\\", "/")
+        if dir_part == ".":
+            dir_part = ""
+        lang = "typescript" if f.suffix.lower() in _TS_EXTS else "javascript"
+        ast_map[rel] = ASTEntry(
+            rel_path=rel,
+            dir=dir_part,
+            content=skeleton,
+            tokens=estimate_tokens(skeleton),
+            language=lang,
         )
 
     return ast_map

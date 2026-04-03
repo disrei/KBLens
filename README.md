@@ -314,6 +314,8 @@ Currently supports:
 
 - **C++** (`.h`, `.hpp`, `.cpp`, `.cc`, `.cxx`) — classes, structs, enums, free functions, templates, supplementary `.cpp` extraction
 - **Python** (`.py`, `.pyi`) — classes with public methods, module-level functions, type-annotated constants, decorators, docstrings, `__all__`; private names (`_prefixed`) are automatically skipped
+- **TypeScript** (`.ts`, `.tsx`) — classes, interfaces, type aliases, enums, exported functions, arrow functions, access modifiers; `private` members and `_prefixed` names are skipped
+- **JavaScript** (`.js`, `.jsx`, `.mjs`, `.cjs`) — classes, exported functions, constants; same extraction logic as TypeScript but without type annotations
 
 The AST extraction, packing, and summarization pipeline is language-agnostic — only the tree-sitter parser and extraction logic is language-specific. Mixed-language projects (e.g., C++ engine with Python tooling) work out of the box.
 
@@ -334,7 +336,7 @@ Planned languages:
 
 - [x] C++
 - [x] Python
-- [ ] TypeScript / JavaScript
+- [x] TypeScript / JavaScript
 - [ ] C#
 - [ ] Java / Kotlin
 - [ ] Rust
