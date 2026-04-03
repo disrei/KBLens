@@ -154,7 +154,7 @@ def _is_retryable(exc: Exception) -> bool:
     """Determine if an LLM exception is worth retrying."""
     exc_str = str(exc).lower()
     cls_name = type(exc).__name__.lower()
-    if "timeout" in cls_name or "ratelimit" in cls_name:
+    if any(k in cls_name for k in ("timeout", "ratelimit", "internalserver", "serviceunavailable")):
         return True
     return any(s in exc_str for s in _RETRYABLE_STRINGS)
 
