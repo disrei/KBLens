@@ -65,6 +65,7 @@ Use these exact headings:
 
 ## Key Types and Relationships
 (classes, structs, enums and how they relate)
+IMPORTANT: For each enum, list ALL its values. For event/data structs, list ALL their fields. These details are critical for searchability.
 
 ## Free Functions and System Functions
 (list ALL non-member functions with their full signatures — these are critical for searchability)

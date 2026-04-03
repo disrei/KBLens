@@ -26,7 +26,7 @@ from .models import ASTEntry, Component, Config
 
 # Token estimation
 CHARS_PER_TOKEN = 4
-MAX_ENUM_CHARS = 500
+MAX_ENUM_CHARS = 4000
 SUPPLEMENTARY_MIN_TOKENS = 50
 
 # Skip files larger than this (bytes). Giant data files like voice synthesis
@@ -443,6 +443,14 @@ def extract_cpp_supplementary(file_path: Path, source: bytes) -> str:
                     sig = _extract_function_sig(child, source, indent)
                     if sig:
                         lines.append(sig)
+
+            elif child.type in ("class_specifier", "struct_specifier"):
+                # Top-level struct/class in .cpp (e.g. event data structs)
+                lines.extend(_extract_class_or_struct(child, source))
+
+            elif child.type == "enum_specifier":
+                # Top-level enum in .cpp
+                lines.extend(_extract_enum(child, source))
 
             elif child.type == "template_declaration":
                 tmpl_text = _node_text(child, source).strip()

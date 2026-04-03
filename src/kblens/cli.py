@@ -84,7 +84,7 @@ app = typer.Typer(
 console = Console()
 
 # Components with fewer AST tokens than this skip LLM and get a static summary.
-MIN_AST_TOKENS_FOR_LLM = 100
+MIN_AST_TOKENS_FOR_LLM = 50
 
 
 # ---------------------------------------------------------------------------
