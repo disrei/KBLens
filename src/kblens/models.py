@@ -23,29 +23,13 @@ SUPPORTED_EXTENSIONS: set[str] = {
     # Python
     ".py",
     ".pyi",
-    # Java / Kotlin
-    ".java",
-    ".kt",
-    ".kts",
-    # Go
-    ".go",
-    # Rust
-    ".rs",
     # TypeScript / JavaScript
     ".ts",
     ".tsx",
     ".js",
     ".jsx",
     ".mjs",
-    # C#
-    ".cs",
-    # Swift
-    ".swift",
-    # Others
-    ".rb",
-    ".php",
-    ".dart",
-    ".scala",
+    ".cjs",
 }
 
 BINARY_EXTENSIONS: set[str] = {

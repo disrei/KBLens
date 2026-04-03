@@ -510,9 +510,9 @@ def extract_ts_js_file(file_path: Path, source: bytes) -> str:
             if inner:
                 _process_node(inner, prefix)
             else:
-                # re-export: export { ... } from '...'
+                # Barrel export: export { foo, bar } or re-export: export { ... } from '...'
                 text = _ts_node_text(node, source).strip()
-                if "from" in text:
+                if text.startswith("export"):
                     lines.append(text)
 
         elif ntype in ("class_declaration", "abstract_class_declaration"):
@@ -577,56 +577,50 @@ def extract_ts_js_file(file_path: Path, source: bytes) -> str:
                 lines.append(f"{export_prefix}{sig}")
 
         elif ntype == "lexical_declaration":
-            # const/let declarations — extract typed constants
-            text = _ts_node_text(node, source).strip().rstrip(";") + ";"
-            # Check for arrow functions or typed constants
+            # const/let declarations — extract typed constants and arrow functions.
+            # May contain multiple declarators: const A = ..., B = ...;
+            kw = "const" if "const" in _ts_node_text(node, source)[:6] else "let"
             for child in node.children:
-                if child.type == "variable_declarator":
-                    vname = ""
+                if child.type != "variable_declarator":
+                    continue
+                vname = ""
+                for sub in child.children:
+                    if sub.type == "identifier":
+                        vname = _ts_node_text(sub, source)
+                        break
+                if _ts_is_private(vname):
+                    continue
+                has_type = any(s.type == "type_annotation" for s in child.children)
+                has_arrow = any(s.type == "arrow_function" for s in child.children)
+                if not (has_type or has_arrow):
+                    continue
+                if has_arrow:
                     for sub in child.children:
-                        if sub.type == "identifier":
-                            vname = _ts_node_text(sub, source)
+                        if sub.type == "arrow_function":
+                            params = ""
+                            ret = ""
+                            is_async = False
+                            for asub in sub.children:
+                                if asub.type == "formal_parameters":
+                                    params = _ts_node_text(asub, source)
+                                elif asub.type == "type_annotation":
+                                    ret = _ts_node_text(asub, source)
+                                elif asub.type == "async":
+                                    is_async = True
+                            aprefix = "async " if is_async else ""
+                            type_ann = ""
+                            for sub2 in child.children:
+                                if sub2.type == "type_annotation":
+                                    type_ann = _ts_node_text(sub2, source)
+                            sig = f"{export_prefix}{kw} {vname}{type_ann} = {aprefix}{params}"
+                            if ret:
+                                sig += f"{ret}"
+                            sig += " => ...;"
+                            lines.append(sig)
                             break
-                    if _ts_is_private(vname):
-                        return
-                    # Only include if it has a type annotation or is an arrow function
-                    has_type = any(s.type == "type_annotation" for s in child.children)
-                    has_arrow = any(s.type == "arrow_function" for s in child.children)
-                    if has_type or has_arrow:
-                        if has_arrow:
-                            # Extract arrow function signature only
-                            for sub in child.children:
-                                if sub.type == "arrow_function":
-                                    params = ""
-                                    ret = ""
-                                    is_async = False
-                                    for asub in sub.children:
-                                        if asub.type == "formal_parameters":
-                                            params = _ts_node_text(asub, source)
-                                        elif asub.type == "type_annotation":
-                                            ret = _ts_node_text(asub, source)
-                                        elif asub.type == "async":
-                                            is_async = True
-                                    aprefix = "async " if is_async else ""
-                                    type_ann = ""
-                                    for sub2 in child.children:
-                                        if sub2.type == "type_annotation":
-                                            type_ann = _ts_node_text(sub2, source)
-                                    kw = (
-                                        "const"
-                                        if "const" in _ts_node_text(node, source)[:6]
-                                        else "let"
-                                    )
-                                    sig = (
-                                        f"{export_prefix}{kw} {vname}{type_ann} = {aprefix}{params}"
-                                    )
-                                    if ret:
-                                        sig += f"{ret}"
-                                    sig += " => ...;"
-                                    lines.append(sig)
-                                    return
-                        lines.append(f"{export_prefix}{text}")
-                    return
+                else:
+                    decl_text = _ts_node_text(child, source).strip()
+                    lines.append(f"{export_prefix}{kw} {decl_text};")
 
     for child in root.children:
         _process_node(child)

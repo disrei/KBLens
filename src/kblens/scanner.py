@@ -150,6 +150,36 @@ def _has_direct_code_files(
     return False
 
 
+def _count_direct_code_files(
+    directory: Path,
+    include_exts: set[str],
+    exclude_patterns: list[str],
+) -> tuple[int, int]:
+    """Count code files directly in a directory (not recursively).
+
+    Returns (file_count, total_lines).
+    """
+    file_count = 0
+    total_lines = 0
+    try:
+        for f in directory.iterdir():
+            if not f.is_file():
+                continue
+            if not is_code_file(f, include_exts):
+                continue
+            if _matches_exclude(f.name, exclude_patterns):
+                continue
+            file_count += 1
+            try:
+                with open(f, "rb") as fh:
+                    total_lines += sum(1 for _ in fh)
+            except (OSError, PermissionError):
+                pass
+    except (OSError, PermissionError):
+        pass
+    return file_count, total_lines
+
+
 def _has_src_or_include(path: Path) -> bool:
     """Check if directory has its own src/ or include/ subdirectory with code."""
     for sub_name in ("src", "include", "Source", "Include"):
@@ -231,6 +261,21 @@ def phase1_scan(config: Config, include_exts: set[str] | None = None) -> list[Co
         except (OSError, PermissionError):
             continue
 
+        # Source root may itself contain code files (e.g. src/index.ts, main.py)
+        if _has_direct_code_files(src_path, include_exts, config.exclude_patterns):
+            fc, tl = _count_direct_code_files(src_path, include_exts, config.exclude_patterns)
+            if fc > 0:
+                components.append(
+                    Component(
+                        source_name=source.name,
+                        package_name="_root",
+                        name="_root",
+                        path=src_path,
+                        file_count=fc,
+                        total_lines=tl,
+                    )
+                )
+
         for pkg_path in top_dirs:
             pkg_name = pkg_path.name
 
@@ -273,12 +318,29 @@ def phase1_scan(config: Config, include_exts: set[str] | None = None) -> list[Co
                         )
                     )
 
-            # Flat layout: package directory itself contains code files.
-            # This handles Python packages, single-level projects, etc.
-            # Only add if no deep components were found in children, OR if
-            # the package dir itself has direct code files not covered by
-            # child components (e.g., __init__.py at package level).
-            if not found_deep_components:
+            # Package root entry files: always check if the package dir itself
+            # has direct code files (e.g. __init__.py, index.ts, mod.rs).
+            # These are often the public API entry point and should not be lost
+            # even when sub-components exist.
+            if found_deep_components:
+                # Only count direct (non-recursive) files to avoid double-counting
+                if _has_direct_code_files(pkg_path, include_exts, config.exclude_patterns):
+                    fc, tl = _count_direct_code_files(
+                        pkg_path, include_exts, config.exclude_patterns
+                    )
+                    if fc > 0:
+                        components.append(
+                            Component(
+                                source_name=source.name,
+                                package_name=pkg_name,
+                                name=f"{pkg_name}._root",
+                                path=pkg_path,
+                                file_count=fc,
+                                total_lines=tl,
+                            )
+                        )
+            else:
+                # No deep components — treat entire package as one flat component
                 fc, tl = count_code_files(pkg_path, include_exts, config.exclude_patterns, pkg_path)
                 if fc > 0:
                     components.append(
