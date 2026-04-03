@@ -19,6 +19,26 @@ logger = logging.getLogger("kblens.scanner")
 AUTO_DETECT_SAMPLE_LIMIT = 2000
 DEFAULT_FALLBACK_EXTENSIONS = {".h", ".hpp", ".cpp", ".cc"}
 
+# Directories that should never be treated as packages or components
+_SKIP_DIRS = frozenset(
+    {
+        "__pycache__",
+        "node_modules",
+        ".git",
+        ".svn",
+        ".hg",
+        "__pypackages__",
+        ".tox",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "venv",
+        ".venv",
+        "env",
+        ".env",
+    }
+)
+
 
 def resolve_include_extensions(config: Config) -> set[str]:
     """Resolve which file extensions to include.
@@ -75,6 +95,11 @@ def is_code_file(file_path: Path, include_exts: set[str]) -> bool:
     return ext in include_exts
 
 
+def _is_skippable_dir(name: str) -> bool:
+    """Check if a directory name should be skipped entirely."""
+    return name.startswith(".") or name in _SKIP_DIRS
+
+
 def count_code_files(
     directory: Path,
     include_exts: set[str],
@@ -106,6 +131,23 @@ def count_code_files(
     except (OSError, PermissionError):
         pass
     return file_count, total_lines
+
+
+def _has_direct_code_files(
+    directory: Path,
+    include_exts: set[str],
+    exclude_patterns: list[str],
+) -> bool:
+    """Check if directory has code files directly (not recursively)."""
+    try:
+        for f in directory.iterdir():
+            if f.is_file() and is_code_file(f, include_exts):
+                rel = f.name
+                if not _matches_exclude(rel, exclude_patterns):
+                    return True
+    except (OSError, PermissionError):
+        pass
+    return False
 
 
 def _has_src_or_include(path: Path) -> bool:
@@ -142,10 +184,27 @@ def detect_subprojects(comp_path: Path) -> list[Path]:
     return [comp_path]
 
 
+# ---------------------------------------------------------------------------
+# Phase 1 entry point
+# ---------------------------------------------------------------------------
+
+
 def phase1_scan(config: Config, include_exts: set[str] | None = None) -> list[Component]:
     """Scan source directories and return a list of components.
 
-    Discovery hierarchy: source_dir / package / component.
+    Uses a flexible discovery strategy that adapts to any project layout:
+
+    1. Walk from each source root, looking for directories that contain code.
+    2. Group discovered code directories into (package, component) pairs
+       based on their relative path from the source root.
+    3. For deep layouts (C++ engine: source/package/component/src/...),
+       the first level is the package, the second+ levels are components.
+    4. For flat layouts (Python: source/package/*.py), the package directory
+       itself becomes a single component.
+    5. Sub-project detection (multiple src/ children) is preserved for C++.
+
+    This makes scanning project-structure-agnostic: any layout where code
+    files live somewhere under the source root will be discovered.
     """
     if include_exts is None:
         include_exts = resolve_include_extensions(config)
@@ -158,60 +217,68 @@ def phase1_scan(config: Config, include_exts: set[str] | None = None) -> list[Co
             logger.warning("Source directory not found, skipping: %s", src_path)
             continue
 
-        # Packages = direct children of source dir
+        # Step 1: discover all directories that contain code files (recursively).
+        # Each such directory is a candidate leaf. We then merge upward to form
+        # meaningful (package, component) groupings.
+        #
+        # Strategy: enumerate direct children of source as "packages".
+        # Within each package, find all code-bearing directories at any depth.
+
         try:
-            packages = sorted(
-                p for p in src_path.iterdir() if p.is_dir() and not p.name.startswith(".")
+            top_dirs = sorted(
+                p for p in src_path.iterdir() if p.is_dir() and not _is_skippable_dir(p.name)
             )
         except (OSError, PermissionError):
             continue
 
-        for pkg_path in packages:
+        for pkg_path in top_dirs:
             pkg_name = pkg_path.name
 
-            # Components = direct children of package
-            _SKIP_DIRS = {"__pycache__", "node_modules", ".git", "__pypackages__"}
+            # Find child directories that are NOT skippable
             try:
-                comp_dirs = sorted(
-                    c
-                    for c in pkg_path.iterdir()
-                    if c.is_dir() and not c.name.startswith(".") and c.name not in _SKIP_DIRS
+                child_dirs = sorted(
+                    c for c in pkg_path.iterdir() if c.is_dir() and not _is_skippable_dir(c.name)
                 )
             except (OSError, PermissionError):
-                continue
+                child_dirs = []
 
-            if comp_dirs:
-                # Standard 3-level layout: source/package/component/
-                for comp_dir in comp_dirs:
-                    # Check for sub-projects within the component
-                    subprojects = detect_subprojects(comp_dir)
+            # Check if child dirs themselves contain code (deep layout)
+            found_deep_components = False
+            for comp_dir in child_dirs:
+                # Sub-project detection for C++ (multiple src/ children)
+                subprojects = detect_subprojects(comp_dir)
 
-                    for sp_path in subprojects:
-                        fc, tl = count_code_files(
-                            sp_path, include_exts, config.exclude_patterns, sp_path
+                for sp_path in subprojects:
+                    fc, tl = count_code_files(
+                        sp_path, include_exts, config.exclude_patterns, sp_path
+                    )
+                    if fc == 0:
+                        continue
+
+                    found_deep_components = True
+
+                    if sp_path != comp_dir:
+                        name = f"{comp_dir.name}/{sp_path.name}"
+                    else:
+                        name = comp_dir.name
+
+                    components.append(
+                        Component(
+                            source_name=source.name,
+                            package_name=pkg_name,
+                            name=name,
+                            path=sp_path,
+                            file_count=fc,
+                            total_lines=tl,
                         )
-                        if fc == 0:
-                            continue
+                    )
 
-                        # Name: if sub-project, use parent/child naming
-                        if sp_path != comp_dir:
-                            name = f"{comp_dir.name}/{sp_path.name}"
-                        else:
-                            name = comp_dir.name
-
-                        components.append(
-                            Component(
-                                source_name=source.name,
-                                package_name=pkg_name,
-                                name=name,
-                                path=sp_path,
-                                file_count=fc,
-                                total_lines=tl,
-                            )
-                        )
-            else:
-                # Flat layout fallback: package dir itself contains code files
-                # (common in Python projects: src/mypackage/*.py)
+            # Flat layout: package directory itself contains code files.
+            # This handles Python packages, single-level projects, etc.
+            # Only add if no deep components were found in children, OR if
+            # the package dir itself has direct code files not covered by
+            # child components (e.g., __init__.py at package level).
+            if not found_deep_components:
                 fc, tl = count_code_files(pkg_path, include_exts, config.exclude_patterns, pkg_path)
                 if fc > 0:
                     components.append(
