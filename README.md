@@ -1,5 +1,7 @@
 # KBLens
 
+English | [中文](README_zh.md)
+
 A progressive-disclosure code knowledge base generator for large C++ codebases. KBLens uses tree-sitter to extract AST skeletons, packs them into LLM-friendly batches, and generates hierarchical Markdown summaries — giving AI coding assistants structured context about your codebase without reading every file.
 
 ## Why KBLens
@@ -39,11 +41,15 @@ This gives AI assistants a reliable, searchable reference — like an always-up-
 ## Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/disrei/kblens.git
-cd kblens
+# From PyPI (when published)
+pip install kblens
 
-# Install in development mode
+# Or install from GitHub directly
+pip install git+https://github.com/disrei/KBLens.git
+
+# Or clone and install in development mode
+git clone https://github.com/disrei/KBLens.git
+cd kblens
 pip install -e .
 
 # Verify

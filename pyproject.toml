@@ -5,19 +5,30 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "kblens"
 version = "0.1.0"
-description = "Progressive-disclosure code knowledge base generator"
+description = "Progressive-disclosure code knowledge base generator for large C++ codebases"
 readme = "README.md"
 requires-python = ">=3.11"
-license = {text = "MIT"}
+license = "MIT"
 authors = [{name = "KBLens Contributors"}]
+keywords = ["code-analysis", "knowledge-base", "llm", "tree-sitter", "cpp", "documentation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Documentation",
+    "Topic :: Software Development :: Code Generators",
+]
 
 dependencies = [
     "tree-sitter>=0.23",
     "tree-sitter-cpp>=0.23",
     "litellm>=1.0",
     "typer>=0.12",
+    "rich>=13.0",
     "pyyaml>=6.0",
-    "tiktoken>=0.7",
 ]
 
 [project.optional-dependencies]
@@ -25,6 +36,11 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.4",
 ]
+
+[project.urls]
+Homepage = "https://github.com/disrei/KBLens"
+Repository = "https://github.com/disrei/KBLens"
+Issues = "https://github.com/disrei/KBLens/issues"
 
 [project.scripts]
 kblens = "kblens.cli:app"

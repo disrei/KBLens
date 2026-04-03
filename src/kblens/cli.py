@@ -5,10 +5,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 import traceback
 from collections import defaultdict
 from pathlib import Path
+
+# Suppress litellm's noisy startup logs (SSL timeout warnings, model cost map fetches)
+# before importing anything that triggers litellm initialization.
+os.environ.setdefault("LITELLM_LOG", "ERROR")
+logging.getLogger("LiteLLM").setLevel(logging.ERROR)
+logging.getLogger("litellm").setLevel(logging.ERROR)
 
 import typer
 from rich.console import Console, Group
@@ -1176,20 +1183,50 @@ def status(
     except Exception as e:
         console.print(f"[red]Error loading config:[/red] {e}")
         raise typer.Exit(1)
-    meta = load_meta(config.output_dir)
-    comps = meta.get("components", {})
-    total = len(comps)
-    done = sum(1 for c in comps.values() if c.get("status") != "failed")
-    failed = sum(1 for c in comps.values() if c.get("status") == "failed")
+
     console.print(f"[bold]KBLens v{__version__}[/bold]")
-    console.print(f"Knowledge base: {config.output_dir}")
-    console.print(f"Components:     {total} ({done} done, {failed} failed)")
-    console.print(f"Last generated: {meta.get('generated_at', 'never')}")
-    console.print(f"LLM model:      {meta.get('llm_model', 'N/A')}")
-    tokens = meta.get("total_tokens", {})
-    console.print(
-        f"Total tokens:   {tokens.get('input', 0):,} in / {tokens.get('output', 0):,} out"
-    )
+    console.print(f"Output root: {config.output_dir}")
+    console.print()
+
+    grand_total = 0
+    grand_done = 0
+    grand_failed = 0
+    grand_skipped = 0
+    grand_in = 0
+    grand_out = 0
+
+    for src in config.source_dirs:
+        src_output = str(Path(config.output_dir) / src.name)
+        meta = load_meta(src_output)
+        comps = meta.get("components", {})
+        total = len(comps)
+        done = sum(1 for c in comps.values() if c.get("status") not in ("failed", "skipped"))
+        failed = sum(1 for c in comps.values() if c.get("status") == "failed")
+        skipped = sum(1 for c in comps.values() if c.get("status") == "skipped")
+        tokens = meta.get("total_tokens", {})
+        in_tok = tokens.get("input", 0)
+        out_tok = tokens.get("output", 0)
+
+        console.print(f"[bold cyan]{src.name}[/bold cyan]  ({src.path})")
+        console.print(f"  Components:   {total} ({done} done, {skipped} skipped, {failed} failed)")
+        console.print(f"  Last updated: {meta.get('generated_at', 'never') or 'never'}")
+        console.print(f"  LLM model:    {meta.get('llm_model', 'N/A') or 'N/A'}")
+        console.print(f"  Tokens:       {in_tok:,} in / {out_tok:,} out")
+        console.print()
+
+        grand_total += total
+        grand_done += done
+        grand_failed += failed
+        grand_skipped += skipped
+        grand_in += in_tok
+        grand_out += out_tok
+
+    if len(config.source_dirs) > 1:
+        console.print(
+            f"[bold]Total:[/bold] {grand_total} components "
+            f"({grand_done} done, {grand_skipped} skipped, {grand_failed} failed), "
+            f"{grand_in:,} in / {grand_out:,} out"
+        )
 
 
 # ---------------------------------------------------------------------------
