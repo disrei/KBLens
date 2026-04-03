@@ -185,6 +185,7 @@ def is_component_done(
     comp_key: str,
     comp_path: Path,
     include_exts: set[str] | None = None,
+    exclude_patterns: list[str] | None = None,
 ) -> bool:
     """Check if a component was already generated and source hasn't changed.
 
@@ -200,7 +201,7 @@ def is_component_done(
     old_hash = existing.get("source_hash", "")
     if not old_hash:
         return False
-    current_hash = compute_source_hash(comp_path, include_exts)
+    current_hash = compute_source_hash(comp_path, include_exts, exclude_patterns)
     return old_hash == current_hash
 
 
@@ -293,13 +294,16 @@ def save_meta(output_dir: str | Path, meta: dict[str, Any]) -> None:
 def compute_source_hash(
     comp_path: Path,
     include_exts: set[str] | None = None,
+    exclude_patterns: list[str] | None = None,
 ) -> str:
     """Compute a hash based on file relative-path + mtime + size.
 
     When *include_exts* is given, only files with matching extensions are
-    included in the hash.  This avoids spurious re-generation when
-    unrelated files (e.g. .cs config in a C++ component) are touched.
+    included in the hash.  When *exclude_patterns* is given, files matching
+    any pattern are skipped (consistent with scan/AST extraction).
     """
+    from .scanner import _matches_exclude
+
     parts: list[str] = []
     try:
         for f in sorted(comp_path.rglob("*")):
@@ -307,6 +311,8 @@ def compute_source_hash(
                 if include_exts and f.suffix.lower() not in include_exts:
                     continue
                 rel = str(f.relative_to(comp_path)).replace("\\", "/")
+                if exclude_patterns and _matches_exclude(rel, exclude_patterns):
+                    continue
                 stat = f.stat()
                 parts.append(f"{rel}:{stat.st_mtime:.0f}:{stat.st_size}")
     except (OSError, PermissionError):
@@ -317,6 +323,7 @@ def compute_source_hash(
 def build_component_meta(
     cr: ComponentResult,
     include_exts: set[str] | None = None,
+    exclude_patterns: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build the _meta.json entry for a single component."""
     comp = cr.component
@@ -331,7 +338,7 @@ def build_component_meta(
             "output": cr.total_output_tokens,
         },
         "last_updated": datetime.now(timezone.utc).isoformat(),
-        "source_hash": compute_source_hash(comp.path, include_exts),
+        "source_hash": compute_source_hash(comp.path, include_exts, exclude_patterns),
     }
 
 

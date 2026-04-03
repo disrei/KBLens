@@ -90,6 +90,25 @@ def _merge_tiny_batches(batches: list[Batch], min_tokens: int, budget: int) -> N
         i += 1
 
 
+def _rebuild_agg_groups(batches: list[Batch]) -> list[AggGroup]:
+    """Rebuild aggregation groups from batch group_key after merging.
+
+    A group_key that appears on more than one batch means those batches
+    need to be aggregated together in Phase 5a.
+    """
+    from collections import defaultdict
+
+    key_to_indices: dict[str, list[int]] = defaultdict(list)
+    for i, b in enumerate(batches):
+        if b.group_key:
+            key_to_indices[b.group_key].append(i)
+    return [
+        AggGroup(parent=key, batch_indices=indices)
+        for key, indices in key_to_indices.items()
+        if len(indices) > 1
+    ]
+
+
 def _recursive_pack(
     dirs: list[str],
     dir_stats: dict[str, int],
@@ -188,5 +207,10 @@ def phase3_pack(
 
     # 5. Merge tiny batches
     _merge_tiny_batches(batches, min_tokens, budget)
+
+    # 6. Rebuild agg_groups from actual batch positions after merging.
+    #    _merge_tiny_batches may pop/reorder batches, invalidating the
+    #    indices recorded earlier. Rebuild by scanning group_key.
+    agg_groups = _rebuild_agg_groups(batches)
 
     return PackResult(batches=batches, aggregation_groups=agg_groups)

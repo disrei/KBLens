@@ -185,6 +185,7 @@ def _classify_components(
     components: list,
     existing_meta: dict,
     include_exts: set[str] | None = None,
+    exclude_patterns: list[str] | None = None,
 ) -> tuple[set[str], set[str], set[str], set[str], set[str]]:
     """Classify components into: unchanged, changed, new, deleted, failed.
 
@@ -204,7 +205,7 @@ def _classify_components(
             new_keys.add(comp.key)
         elif meta_entry.get("status") == "failed":
             failed_keys.add(comp.key)
-        elif is_component_done(existing_meta, comp.key, comp.path, include_exts):
+        elif is_component_done(existing_meta, comp.key, comp.path, include_exts, exclude_patterns):
             unchanged_keys.add(comp.key)
         else:
             changed_keys.add(comp.key)
@@ -350,7 +351,7 @@ def _generate_one_source(config: Config, dry_run: bool) -> None:
     # ---- Change detection ----
     existing_meta = load_meta(config.output_dir)
     unchanged_keys, changed_keys, new_keys, deleted_keys, failed_keys = _classify_components(
-        components, existing_meta, include_exts
+        components, existing_meta, include_exts, config.exclude_patterns
     )
     skip_keys = unchanged_keys  # Only truly unchanged components are skipped
 
@@ -545,7 +546,9 @@ async def _process_one_component(
                     "status": "skipped",
                     "reason": "ast_tokens_below_threshold",
                     "ast_tokens": total_ast_tokens,
-                    "source_hash": compute_source_hash(comp.path, include_exts),
+                    "source_hash": compute_source_hash(
+                        comp.path, include_exts, config.exclude_patterns
+                    ),
                     "last_updated": datetime.now(timezone.utc).isoformat(),
                 },
                 config.llm.model,
@@ -686,7 +689,7 @@ async def _process_one_component(
         save_meta_component(
             config.output_dir,
             comp.key,
-            build_component_meta(cr, include_exts),
+            build_component_meta(cr, include_exts, config.exclude_patterns),
             config.llm.model,
         )
 
@@ -857,12 +860,18 @@ async def _run_summarization_live(
                             txt = md_path.read_text(encoding="utf-8")
                             comp_overviews[comp.name] = (txt, comp.file_count)
                         else:
-                            # Component exists but has no .md (e.g. was skipped due to no AST)
-                            # Check if it's a failed component — include a marker
+                            # Component exists but has no .md
                             meta_entry = existing_meta.get("components", {}).get(comp.key, {})
-                            if meta_entry.get("status") == "failed":
+                            status = meta_entry.get("status", "")
+                            if status == "failed":
                                 comp_overviews[comp.name] = (
                                     f"*Generation failed: {meta_entry.get('error', 'unknown')}*",
+                                    comp.file_count,
+                                )
+                            elif status == "skipped":
+                                reason = meta_entry.get("reason", "insufficient AST content")
+                                comp_overviews[comp.name] = (
+                                    f"*Skipped: {reason} ({comp.file_count} files)*",
                                     comp.file_count,
                                 )
 
@@ -1009,6 +1018,9 @@ def monitor(
     config_path: str = typer.Option(
         None, "--config", "-c", help="Config file path (default: auto-detect)"
     ),
+    source: str = typer.Option(
+        None, "--source", "-s", help="Source name to monitor (auto-detect if only one)"
+    ),
     follow: bool = typer.Option(True, "--follow/--no-follow", "-f", help="Continuously follow"),
 ) -> None:
     """Monitor a running generate process in real time."""
@@ -1018,7 +1030,24 @@ def monitor(
         console.print(f"[red]Error loading config:[/red] {e}")
         raise typer.Exit(1)
 
-    progress_path = Path(config.output_dir) / "_progress.jsonl"
+    # Find the progress file in the correct source subdirectory
+    if source:
+        progress_path = Path(config.output_dir) / source / "_progress.jsonl"
+    else:
+        # Auto-detect: find the most recently modified _progress.jsonl
+        candidates = list(Path(config.output_dir).glob("*/_progress.jsonl"))
+        if len(candidates) == 1:
+            progress_path = candidates[0]
+        elif len(candidates) > 1:
+            # Pick the most recently modified
+            progress_path = max(candidates, key=lambda p: p.stat().st_mtime)
+            console.print(
+                f"[dim]Multiple sources found, monitoring most recent: "
+                f"{progress_path.parent.name}[/dim]"
+            )
+            console.print(f"[dim]Use --source <name> to pick a specific one.[/dim]")
+        else:
+            progress_path = Path(config.output_dir) / "_progress.jsonl"
     if not progress_path.exists():
         console.print(
             f"[yellow]No progress file found at {progress_path}[/yellow]\n"

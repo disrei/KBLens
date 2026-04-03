@@ -279,7 +279,7 @@ On subsequent runs:
 - **New components** are generated and added to the package overview
 - **Deleted components** have their `.md` files and metadata cleaned up
 - **Failed components** (from previous timeout/errors) are automatically retried
-- **Skipped components** (< 100 AST tokens) are recorded in metadata to avoid re-scanning
+- **Skipped components** (< 50 AST tokens) are recorded in metadata to avoid re-scanning
 - **L0 INDEX** is regenerated only if any package changed
 
 #### Typical workflow
@@ -312,7 +312,7 @@ Each component's identity is a hash of `(relative_path, mtime, size)` for all co
 
 Currently supports **C++** (`.h`, `.hpp`, `.cpp`, `.cc`, `.cxx`). The AST extraction, packing, and summarization pipeline is language-agnostic — only the tree-sitter parser and extraction logic is language-specific.
 
-Other file types are detected during scanning but produce 0 AST tokens and are skipped. Components with fewer than 100 AST tokens are excluded from LLM summarization.
+Other file types are detected during scanning but produce 0 AST tokens and are skipped. Components with fewer than 50 AST tokens are excluded from LLM summarization.
 
 ### Roadmap
 
