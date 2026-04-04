@@ -34,6 +34,14 @@ from rich.table import Table
 from rich.text import Text
 
 from . import __version__
+from .agent_skills import (
+    AGENT_SKILL_TARGETS,
+    detect_targets,
+    get_target,
+    install_targets,
+    skill_status_rows,
+    uninstall_targets,
+)
 from .ast_extract import phase2_extract_ast
 from .config import (
     CONFIG_TEMPLATE,
@@ -83,8 +91,142 @@ app = typer.Typer(
 )
 console = Console()
 
+skill_app = typer.Typer(
+    name="skill",
+    help="Install the bundled KBLens agent skill into supported coding agents.",
+    no_args_is_help=True,
+)
+app.add_typer(skill_app, name="skill")
+
 # Components with fewer AST tokens than this skip LLM and get a static summary.
 MIN_AST_TOKENS_FOR_LLM = 50
+
+
+def _render_skill_install_results(results: dict[str, str]) -> None:
+    for target in AGENT_SKILL_TARGETS:
+        if target.key not in results:
+            continue
+        status = results[target.key]
+        if status == "installed":
+            console.print(f"[green]Installed[/green] {target.display_name}")
+        elif status == "exists":
+            console.print(
+                f"[yellow]Already installed[/yellow] {target.display_name} "
+                f"(use --force to overwrite)"
+            )
+        elif status == "removed":
+            console.print(f"[green]Removed[/green] {target.display_name}")
+        elif status == "missing":
+            console.print(f"[yellow]Not installed[/yellow] {target.display_name}")
+        elif status == "manual":
+            console.print(f"[yellow]Manual setup required[/yellow] {target.display_name}")
+            console.print(f"  {target.manual_help}")
+
+
+def _print_skill_setup_guidance() -> None:
+    console.print()
+    console.print("Skill setup:")
+    detected = detect_targets()
+    if not detected:
+        console.print("  No supported coding agent detected.")
+        console.print("  Install the KBLens skill manually into one of these locations:")
+        for target in AGENT_SKILL_TARGETS:
+            console.print(f"    - {target.display_name}: {target.manual_help}")
+        return
+
+    auto_targets = [target for target in detected if target.supports_auto_install]
+    manual_targets = [target for target in detected if not target.supports_auto_install]
+
+    console.print(
+        "  Detected agents: " + ", ".join(target.display_name for target in detected)
+    )
+    if auto_targets:
+        console.print("  Run [cyan]kblens skill install[/cyan] to install the bundled skill.")
+    if manual_targets:
+        for target in manual_targets:
+            console.print(f"  {target.display_name}: {target.manual_help}")
+
+
+@skill_app.command("install")
+def skill_install(
+    tool: list[str] = typer.Option(
+        None,
+        "--tool",
+        "-t",
+        help="Install for a specific tool key. Repeat to install multiple times.",
+    ),
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite an existing install."),
+) -> None:
+    """Install the bundled KBLens skill into supported coding agents."""
+    selected = tool or []
+    targets = []
+
+    if selected:
+        for key in selected:
+            target = get_target(key)
+            if target is None:
+                valid = ", ".join(target.key for target in AGENT_SKILL_TARGETS)
+                console.print(f"[red]Unknown tool:[/red] {key}")
+                console.print(f"Valid tool keys: {valid}")
+                raise typer.Exit(1)
+            targets.append(target)
+    else:
+        targets = detect_targets()
+        if not targets:
+            console.print("[yellow]No supported coding agent detected.[/yellow]")
+            _print_skill_setup_guidance()
+            raise typer.Exit(1)
+
+    results = install_targets(targets, force=force)
+    _render_skill_install_results(results)
+
+
+@skill_app.command("status")
+def skill_status() -> None:
+    """Show installation status for the bundled KBLens skill."""
+    detected_keys = {target.key for target in detect_targets()}
+    table = Table(title="KBLens Skill Status")
+    table.add_column("Tool", style="cyan")
+    table.add_column("Detected")
+    table.add_column("Installed")
+    table.add_column("Auto install")
+    table.add_column("Path / Notes")
+
+    for row in skill_status_rows():
+        detected = "yes" if row["key"] in detected_keys else "no"
+        path_or_help = row["path"] if row["auto"] == "yes" else row["manual_help"]
+        table.add_row(row["name"], detected, row["installed"], row["auto"], path_or_help)
+
+    console.print(table)
+
+
+@skill_app.command("uninstall")
+def skill_uninstall(
+    tool: list[str] = typer.Option(
+        None,
+        "--tool",
+        "-t",
+        help="Uninstall from a specific tool key. Repeat to uninstall multiple times.",
+    ),
+) -> None:
+    """Remove the bundled KBLens skill from supported coding agents."""
+    selected = tool or []
+    targets = []
+
+    if selected:
+        for key in selected:
+            target = get_target(key)
+            if target is None:
+                valid = ", ".join(target.key for target in AGENT_SKILL_TARGETS)
+                console.print(f"[red]Unknown tool:[/red] {key}")
+                console.print(f"Valid tool keys: {valid}")
+                raise typer.Exit(1)
+            targets.append(target)
+    else:
+        targets = [target for target in AGENT_SKILL_TARGETS if target.supports_auto_install]
+
+    results = uninstall_targets(targets)
+    _render_skill_install_results(results)
 
 
 # ---------------------------------------------------------------------------
@@ -1332,6 +1474,7 @@ def init(
     console.print(f"     (or set KBLENS_LLM_KEY environment variable)")
     console.print(f"  2. Run [cyan]kblens generate[/cyan] to build the knowledge base")
     console.print(f"  3. Run [cyan]kblens generate --dry-run[/cyan] to preview first")
+    _print_skill_setup_guidance()
 
 
 @app.command()
