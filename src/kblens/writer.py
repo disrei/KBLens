@@ -73,6 +73,18 @@ def write_knowledge_base(
 # ---------------------------------------------------------------------------
 
 
+def _append_ast_section(summary: str, ast_text: str, language: str = "cpp") -> str:
+    """Append raw AST signatures section to a leaf summary."""
+    if not ast_text or not ast_text.strip():
+        return summary
+    return (
+        summary
+        + f"\n\n---\n\n## Complete API Signatures\n\n```{language}\n"
+        + ast_text.strip()
+        + "\n```"
+    )
+
+
 def write_component_incremental(config: Config, cr: ComponentResult) -> None:
     """Write a single component's Markdown immediately after it is generated.
 
@@ -93,7 +105,27 @@ def write_component_incremental(config: Config, cr: ComponentResult) -> None:
             for sub_name, sub_text in sorted(cr.submodule_summaries.items()):
                 # Skip if sub_name is empty or just "." - it's a placeholder
                 if sub_name and sub_name != ".":
-                    content += f"\n\n---\n\n## {sub_name}\n\n{sub_text}"
+                    if not sub_text.strip():
+                        logger.warning("Skipping empty submodule summary: %s", sub_name)
+                        continue
+                    combined = _append_ast_section(
+                        sub_text, cr.submodule_ast.get(sub_name, ""), cr.detected_language
+                    )
+                    content += f"\n\n---\n\n## {sub_name}\n\n{combined}"
+        elif cr.submodule_ast:
+            # Single batch, Phase 5b skipped — append AST to the overview
+            single_key = next(iter(cr.submodule_ast), "")
+            if single_key:
+                content = _append_ast_section(
+                    content, cr.submodule_ast[single_key], cr.detected_language
+                )
+        else:
+            # No AST content available (should not happen in normal flow)
+            if cr.submodule_summaries:
+                logger.warning(
+                    "Component %s has summaries but no AST content to append",
+                    comp.key,
+                )
         _write_file(pkg_comp_dir / f"{comp_name_safe}.md", content)
     else:
         # Large component -> overview + submodule directory
@@ -101,8 +133,14 @@ def write_component_incremental(config: Config, cr: ComponentResult) -> None:
         if cr.submodule_summaries:
             sub_dir = pkg_comp_dir / comp_name_safe
             for sub_name, sub_text in sorted(cr.submodule_summaries.items()):
+                if not sub_text.strip():
+                    logger.warning("Skipping empty submodule summary: %s", sub_name)
+                    continue
+                combined = _append_ast_section(
+                    sub_text, cr.submodule_ast.get(sub_name, ""), cr.detected_language
+                )
                 safe = sub_name.replace("/", "_").replace("\\", "_")
-                _write_file(sub_dir / f"{safe}.md", sub_text)
+                _write_file(sub_dir / f"{safe}.md", combined)
 
 
 # Lock for thread-safe meta updates (asyncio tasks may write concurrently)
@@ -195,8 +233,8 @@ def is_component_done(
     existing = meta.get("components", {}).get(comp_key)
     if not existing:
         return False
-    # Failed components should always be retried
-    if existing.get("status") == "failed":
+    # Failed or partial components should always be retried
+    if existing.get("status") in ("failed", "partial"):
         return False
     old_hash = existing.get("source_hash", "")
     if not old_hash:
@@ -327,9 +365,18 @@ def build_component_meta(
 ) -> dict[str, Any]:
     """Build the _meta.json entry for a single component."""
     comp = cr.component
+    # Detect if any submodule summary is empty — mark as partial so it gets retried
+    has_empty = (
+        any(not text.strip() for text in cr.submodule_summaries.values())
+        if cr.submodule_summaries
+        else False
+    )
+    status = "partial" if has_empty else "done"
+    if has_empty:
+        logger.warning("Component %s has empty submodule summaries, marking as partial", comp.key)
     return {
         "path": str(comp.path),
-        "status": "done",
+        "status": status,
         "file_count": comp.file_count,
         "total_lines": comp.total_lines,
         "batch_count": cr.batch_count,

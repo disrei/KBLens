@@ -40,7 +40,19 @@ Each source has this internal structure:
 Three-layer hierarchy:
 - **L0 (INDEX.md)**: Source-level overview + package directory (with hyperlinks)
 - **L1 (<package>.md)**: Component grouping within package, cross-component deps, navigation guide
-- **L2 (<package>/<component>.md)**: Component details — Responsibility, Key Types, Public APIs, Dependencies
+- **L2 (<package>/<component>.md)**: Component overview — Purpose, Architecture, Key API names, Dependencies. For large components, a subdirectory contains leaf files with full API signatures; for small components, signatures are inline in this file.
+
+## Leaf File Structure
+
+Leaf-level `.md` files (in component subdirectories like `SmartDrive/src_smartdrive.md`) have two sections separated by `---`:
+
+1. **Summary section** (above `---`): LLM-generated overview — Responsibility, Key Types, Source Files, Dependencies. Compact and high-level.
+2. **`## Complete API Signatures`** (below `---`): Raw AST-extracted C++ signatures — complete function/method declarations, class/struct definitions, enum values. This is the authoritative source for exact signatures.
+
+**Reading strategy to minimize context usage**:
+- For architecture questions: read only the summary section (above `---`)
+- For specific function signatures: grep the file, then use Read with offset/limit around the match line
+- Do NOT read the entire leaf file into context if you only need the summary — the AST section can be very large
 
 ## Step 1: Determine Search Type
 
@@ -107,5 +119,5 @@ Knowledge base `.md` filenames are generated from the component `name` field by 
 
 - **Public API only**: The knowledge base is based on C++ AST extraction — it contains header file and standalone `.cpp` signatures, not function implementation bodies
 - **Dependencies may be incomplete**: If a `.md` says "No explicit dependencies visible in AST excerpt.", it just means no `#include` was seen in the extracted AST, not that there are truly no dependencies
-- **For implementation details**: The knowledge base only provides entry points (class names, interface signatures). For actual implementation, search source code directly
+- **For implementation details**: Use the summary section to understand architecture and the `## Complete API Signatures` section for exact signatures. For actual implementation logic (function bodies), search source code directly
 - **C++ only**: Other languages (C#, Python, etc.) are not covered by the knowledge base

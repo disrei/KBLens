@@ -252,6 +252,7 @@ class BatchSummary:
 
     batch: Batch
     summary: str
+    ast_content: str = ""  # raw AST text, appended to .md by writer
     input_tokens: int = 0
     output_tokens: int = 0
 
@@ -263,6 +264,8 @@ class ComponentResult:
     component: Component
     overview: str = ""
     submodule_summaries: dict[str, str] = field(default_factory=dict)
+    submodule_ast: dict[str, str] = field(default_factory=dict)  # raw AST per submodule
+    detected_language: str = "cpp"  # for code block syntax highlighting
     batch_count: int = 0
     total_input_tokens: int = 0
     total_output_tokens: int = 0

@@ -61,9 +61,9 @@ from .packer import phase3_pack
 from .progress import ProgressLog
 from .scanner import phase1_scan, resolve_include_extensions
 from .summarizer import (
-    LEAF_MAX_TOKENS,
     LEAF_PROMPT,
     _build_batch_content,
+    _compute_leaf_max_tokens,
     _llm_call,
     phase5a_aggregate,
     phase5b_component,
@@ -137,9 +137,7 @@ def _print_skill_setup_guidance() -> None:
     auto_targets = [target for target in detected if target.supports_auto_install]
     manual_targets = [target for target in detected if not target.supports_auto_install]
 
-    console.print(
-        "  Detected agents: " + ", ".join(target.display_name for target in detected)
-    )
+    console.print("  Detected agents: " + ", ".join(target.display_name for target in detected))
     if auto_targets:
         console.print("  Run [cyan]kblens skill install[/cyan] to install the bundled skill.")
     if manual_targets:
@@ -345,7 +343,7 @@ def _classify_components(
         meta_entry = existing_meta.get("components", {}).get(comp.key)
         if meta_entry is None:
             new_keys.add(comp.key)
-        elif meta_entry.get("status") == "failed":
+        elif meta_entry.get("status") in ("failed", "partial"):
             failed_keys.add(comp.key)
         elif is_component_done(existing_meta, comp.key, comp.path, include_exts, exclude_patterns):
             unchanged_keys.add(comp.key)
@@ -723,10 +721,12 @@ async def _process_one_component(
                     ast_content=ast_content,
                     summary_language=config.summary_language,
                 )
-                text, in_tok, out_tok = await _llm_call(prompt, config, max_tokens=LEAF_MAX_TOKENS)
+                max_out = _compute_leaf_max_tokens(batch.tokens)
+                text, in_tok, out_tok = await _llm_call(prompt, config, max_tokens=max_out)
                 return BatchSummary(
                     batch=batch,
                     summary=text,
+                    ast_content=ast_content,
                     input_tokens=in_tok,
                     output_tokens=out_tok,
                 )
@@ -759,6 +759,7 @@ async def _process_one_component(
 
         # ---- Phase 5a: aggregate fragments ----
         submodule_summaries: dict[str, str] = {}
+        submodule_ast: dict[str, str] = {}
         total_in = sum(s.input_tokens for s in summaries)
         total_out = sum(s.output_tokens for s in summaries)
 
@@ -780,17 +781,27 @@ async def _process_one_component(
                 async with ds._lock:
                     ds.llm_calls += 1
                 plog.llm_call("aggregate", parent, in_t, out_t)
+            # Collect AST content: merge all batches in each agg group
             agg_indices = set()
             for ag in pack_result.aggregation_groups:
                 agg_indices.update(ag.batch_indices)
+                parts = [
+                    summaries[i].ast_content for i in ag.batch_indices if summaries[i].ast_content
+                ]
+                if parts:
+                    submodule_ast[ag.parent] = "\n\n".join(parts)
             for i, s in enumerate(summaries):
                 if i not in agg_indices:
                     key = s.batch.group_key or f"batch_{i}"
                     submodule_summaries[key] = s.summary
+                    if s.ast_content:
+                        submodule_ast[key] = s.ast_content
         else:
             for i, s in enumerate(summaries):
                 key = s.batch.group_key or f"batch_{i}"
                 submodule_summaries[key] = s.summary
+                if s.ast_content:
+                    submodule_ast[key] = s.ast_content
 
         # ---- Phase 5b: component overview (skip for single batch w/o aggregation) ----
         skip_phase5b = n_batches == 1 and not pack_result.aggregation_groups
@@ -817,10 +828,16 @@ async def _process_one_component(
                 ds.llm_calls += 1
             plog.llm_call("component", comp.key, in_t, out_t)
 
+        # Detect primary language from AST entries for code block highlighting
+        _langs = {e.language for e in ast_map.values() if e.language}
+        detected_lang = next(iter(sorted(_langs)), "cpp")
+
         cr = ComponentResult(
             component=comp,
             overview=overview,
             submodule_summaries=submodule_summaries,
+            submodule_ast=submodule_ast,
+            detected_language=detected_lang,
             batch_count=n_batches,
             total_input_tokens=total_in,
             total_output_tokens=total_out,

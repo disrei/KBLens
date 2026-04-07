@@ -31,16 +31,33 @@ logger = logging.getLogger("kblens.summarizer")
 # LLM max_tokens per phase (central place to tune output length)
 # ---------------------------------------------------------------------------
 
-LEAF_MAX_TOKENS = 1000
-FRAGMENT_AGG_MAX_TOKENS = 500
-COMPONENT_MAX_TOKENS = 800
-PACKAGE_MAX_TOKENS = 1000
+# Leaf: dynamically computed — see _compute_leaf_max_tokens()
+# Since LLM now only writes summaries (not signatures), output is much smaller.
+LEAF_MAX_TOKENS_FLOOR = 400
+LEAF_MAX_TOKENS_CEILING = 1500
+LEAF_OUTPUT_RATIO = 0.15  # LLM only writes summaries, not signatures
+
+FRAGMENT_AGG_MAX_TOKENS = 800
+COMPONENT_MAX_TOKENS = 1500
+PACKAGE_MAX_TOKENS = 1500
 INDEX_MAX_TOKENS = 2000
 
 # Text truncation limits for context passed to higher-level prompts
-BRIEF_DEFAULT_CHARS = 600
-BRIEF_TABLE_CHARS = 200
+BRIEF_DEFAULT_CHARS = 1000
+BRIEF_TABLE_CHARS = 400
 BRIEF_INDEX_CHARS = 150
+
+
+def _compute_leaf_max_tokens(batch_input_tokens: int) -> int:
+    """Dynamically compute output token budget based on batch input size.
+
+    Since the LLM now only generates summaries (Responsibility, Key Types,
+    Dependencies) and raw AST signatures are appended directly by the writer,
+    the output budget can be much smaller.
+    """
+    computed = int(batch_input_tokens * LEAF_OUTPUT_RATIO) + 200
+    return max(LEAF_MAX_TOKENS_FLOOR, min(computed, LEAF_MAX_TOKENS_CEILING))
+
 
 # ---------------------------------------------------------------------------
 # Prompt templates  (keep concise — every token costs money)
@@ -57,21 +74,16 @@ Directories: {dir_tree}
 {ast_content}
 ```
 
-Summarize this code (in {summary_language}, max 400 words, Markdown).
+Summarize this code in {summary_language}, using Markdown. Be concise.
+The raw API signatures will be appended separately — do NOT list individual function signatures.
+
 Use these exact headings:
 
 ## Responsibility
-(1-2 sentences)
+(1-2 sentences: what this code does and why it exists)
 
 ## Key Types and Relationships
-(classes, structs, enums and how they relate)
-IMPORTANT: For each enum, list ALL its values. For event/data structs, list ALL their fields. These details are critical for searchability.
-
-## Free Functions and System Functions
-(list ALL non-member functions with their full signatures — these are critical for searchability)
-
-## Main Public Interfaces
-(key class methods and their signatures)
+(classes, structs, enums and how they relate to each other — focus on inheritance, composition, and collaboration patterns)
 
 ## Source Files
 (list the source file paths from the `// --- path ---` markers above, grouped by role)
@@ -79,9 +91,10 @@ IMPORTANT: For each enum, list ALL its values. For event/data structs, list ALL 
 ## Dependencies
 (only list #include paths or types from other components visible above)
 
-IMPORTANT: Every function name visible in the AST MUST appear in the summary. Do not summarize multiple functions as a group — list each one individually with its signature.
-Be factual. Only describe what is visible in the AST above. Do NOT invent files, classes, or dependencies not shown. If no #include is visible, write "No explicit dependencies visible in AST excerpt.".
-When mentioning specific functions or types, include the source file path where they are defined."""
+RULES:
+- Be factual. Only describe what is visible in the AST above. Do NOT invent files, classes, or dependencies.
+- If no #include is visible, write "No explicit dependencies visible in AST excerpt."
+- Do NOT list individual function signatures — they are preserved separately from the raw AST."""
 
 FRAGMENT_AGG_PROMPT = """\
 Partial summaries of `{parent}`:
@@ -102,7 +115,7 @@ Submodule details:
 Write a component overview ({summary_language}, max 400 words, Markdown):
 1. Purpose (1-2 sentences)
 2. Architecture (how submodules relate)
-3. Key public API summary
+3. Key public API summary (list important class/interface NAMES only — full signatures are preserved in leaf files)
 4. Dependencies (only those explicitly mentioned in the submodule details)
 
 Only use information from the submodule details above. Do NOT invent content.
@@ -147,7 +160,17 @@ LLM_RETRY_BASE_DELAY = 5.0  # seconds
 LLM_RETRY_MAX_DELAY = 30.0  # seconds
 
 # Exception types worth retrying (timeout, rate-limit, server errors)
-_RETRYABLE_STRINGS = ("timeout", "rate_limit", "rate limit", "429", "500", "502", "503", "504")
+_RETRYABLE_STRINGS = (
+    "timeout",
+    "rate_limit",
+    "rate limit",
+    "429",
+    "500",
+    "502",
+    "503",
+    "504",
+    "empty content",
+)
 
 
 def _is_retryable(exc: Exception) -> bool:
@@ -162,7 +185,7 @@ def _is_retryable(exc: Exception) -> bool:
 async def _llm_call(
     prompt: str,
     config: Config,
-    max_tokens: int = LEAF_MAX_TOKENS,
+    max_tokens: int = 1000,
     system: str = "You are a concise code documentation writer. Be factual and brief.",
 ) -> tuple[str, int, int]:
     """Call LLM via litellm with exponential back-off retry.
@@ -189,6 +212,16 @@ async def _llm_call(
         try:
             response = await litellm.acompletion(**kwargs)
             text = response.choices[0].message.content or ""
+            if not text.strip():
+                raise ValueError(
+                    "LLM returned empty content (model may have refused or hit a content filter)"
+                )
+            finish_reason = getattr(response.choices[0], "finish_reason", None)
+            if finish_reason == "length":
+                logger.warning(
+                    "LLM output truncated (hit max_tokens=%d). Output may be incomplete.",
+                    max_tokens,
+                )
             usage = response.usage
             in_tok = usage.prompt_tokens if usage else 0
             out_tok = usage.completion_tokens if usage else 0
@@ -263,6 +296,7 @@ async def phase4_generate(
     async def process(batch: Batch) -> BatchSummary:
         async with semaphore:
             ast_content, dir_tree = _build_batch_content(batch, ast_map)
+            max_out = _compute_leaf_max_tokens(batch.tokens)
             prompt = LEAF_PROMPT.format(
                 package_name=component.package_name,
                 component_name=component.name,
@@ -276,11 +310,12 @@ async def phase4_generate(
             text, in_tok, out_tok = await _llm_call(
                 prompt,
                 config,
-                max_tokens=LEAF_MAX_TOKENS,
+                max_tokens=max_out,
             )
             return BatchSummary(
                 batch=batch,
                 summary=text,
+                ast_content=ast_content,
                 input_tokens=in_tok,
                 output_tokens=out_tok,
             )
@@ -394,7 +429,11 @@ async def phase5c_package(
         component_table=table,
         summary_language=config.summary_language,
     )
-    return await _llm_call(prompt, config, max_tokens=PACKAGE_MAX_TOKENS)
+    # Scale output budget with number of components:
+    # ~30 tokens per component row + 300 tokens fixed overhead
+    n_components = len(component_overviews)
+    max_out = max(PACKAGE_MAX_TOKENS, min(n_components * 30 + 300, 3000))
+    return await _llm_call(prompt, config, max_tokens=max_out)
 
 
 # ---------------------------------------------------------------------------
