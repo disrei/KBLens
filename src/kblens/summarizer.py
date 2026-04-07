@@ -19,10 +19,7 @@ from .models import (
     Batch,
     BatchSummary,
     Component,
-    ComponentResult,
     Config,
-    PackResult,
-    PackageResult,
 )
 
 logger = logging.getLogger("kblens.summarizer")
@@ -41,11 +38,6 @@ FRAGMENT_AGG_MAX_TOKENS = 800
 COMPONENT_MAX_TOKENS = 1500
 PACKAGE_MAX_TOKENS = 1500
 INDEX_MAX_TOKENS = 2000
-
-# Text truncation limits for context passed to higher-level prompts
-BRIEF_DEFAULT_CHARS = 1000
-BRIEF_TABLE_CHARS = 400
-BRIEF_INDEX_CHARS = 150
 
 
 def _compute_leaf_max_tokens(batch_input_tokens: int) -> int:
@@ -124,9 +116,7 @@ Do NOT speculate about possible interactions — only state relationships that a
 PACKAGE_PROMPT = """\
 Package: {package_name}
 
-| Component | Purpose | Files |
-|---|---|---|
-{component_table}
+{component_sections}
 
 Write a package overview ({summary_language}, max 500 words, Markdown):
 1. Package purpose
@@ -134,12 +124,10 @@ Write a package overview ({summary_language}, max 500 words, Markdown):
 3. Known cross-component dependencies (only from explicit references in the component summaries — do NOT speculate about possible interactions)
 4. Navigation guide: "For X, see Y"
 
-Only use information from the table above. Be factual and avoid speculative language like "likely", "probably", "could", or "may"."""
+Only use information from the component summaries above. Be factual and avoid speculative language like "likely", "probably", "could", or "may"."""
 
 INDEX_PROMPT = """\
-| Package | Source | Purpose |
-|---|---|---|
-{package_table}
+{package_sections}
 
 Write a knowledge base index ({summary_language}, Markdown):
 1. Project overview (2-3 sentences)
@@ -147,7 +135,7 @@ Write a knowledge base index ({summary_language}, Markdown):
 3. High-level architecture
 4. How to navigate this knowledge base
 
-Only use information from the table above."""
+Only use information from the package summaries above."""
 
 
 # ---------------------------------------------------------------------------
@@ -363,39 +351,15 @@ async def phase5a_aggregate(
 # ---------------------------------------------------------------------------
 
 
-def _brief(text: str, max_chars: int = BRIEF_DEFAULT_CHARS) -> str:
-    """Truncate text to approximately max_chars, cutting at sentence boundary."""
-    if max_chars <= 0 or len(text) <= max_chars:
-        return text
-    cut = text[:max_chars].rfind(". ")
-    if cut > max_chars // 2:
-        return text[: cut + 1]
-    return text[:max_chars] + "..."
-
-
-# Max total chars for submodule text passed to Phase 5b prompt.
-# If sum of all summaries exceeds this, each is truncated proportionally.
-PHASE5B_MAX_CONTEXT_CHARS = 12000
-
-
 async def phase5b_component(
     component: Component,
     submodule_summaries: dict[str, str],
     config: Config,
 ) -> tuple[str, int, int]:
     """Generate component overview from submodule summaries."""
-    # Calculate total length, decide per-submodule budget
-    total_len = sum(len(s) for s in submodule_summaries.values())
-    n = len(submodule_summaries)
-    if total_len > PHASE5B_MAX_CONTEXT_CHARS and n > 0:
-        per_sub = PHASE5B_MAX_CONTEXT_CHARS // n
-    else:
-        per_sub = 0  # 0 = no truncation
-
     text_parts = []
     for name, summary in sorted(submodule_summaries.items()):
-        text = _brief(summary, per_sub) if per_sub > 0 else summary
-        text_parts.append(f"### {name}\n{text}")
+        text_parts.append(f"### {name}\n{summary}")
     submodule_text = "\n\n".join(text_parts)
 
     prompt = COMPONENT_PROMPT.format(
@@ -419,14 +383,14 @@ async def phase5c_package(
     config: Config,
 ) -> tuple[str, int, int]:
     """Generate package overview from component overviews."""
-    rows = []
+    sections = []
     for name, (overview, fc) in sorted(component_overviews.items()):
-        rows.append(f"| {name} | {_brief(overview, BRIEF_TABLE_CHARS)} | {fc} |")
-    table = "\n".join(rows)
+        sections.append(f"### {name} ({fc} files)\n{overview}")
+    component_sections = "\n\n".join(sections)
 
     prompt = PACKAGE_PROMPT.format(
         package_name=pkg_name,
-        component_table=table,
+        component_sections=component_sections,
         summary_language=config.summary_language,
     )
     # Scale output budget with number of components:
@@ -446,13 +410,13 @@ async def phase5d_index(
     config: Config,
 ) -> tuple[str, int, int]:
     """Generate the global INDEX.md."""
-    rows = []
+    sections = []
     for name, (overview, source_name) in sorted(package_overviews.items()):
-        rows.append(f"| {name} | {source_name} | {_brief(overview, BRIEF_INDEX_CHARS)} |")
-    table = "\n".join(rows)
+        sections.append(f"### {name} (source: {source_name})\n{overview}")
+    package_sections = "\n\n".join(sections)
 
     prompt = INDEX_PROMPT.format(
-        package_table=table,
+        package_sections=package_sections,
         summary_language=config.summary_language,
     )
     return await _llm_call(prompt, config, max_tokens=INDEX_MAX_TOKENS)

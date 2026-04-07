@@ -59,8 +59,8 @@ def resolve_include_extensions(config: Config) -> set[str]:
                     if ext in SUPPORTED_EXTENSIONS:
                         detected.add(ext)
                     count += 1
-                    # Only stop early after enough files AND all common C++ exts found
-                    if count >= AUTO_DETECT_SAMPLE_LIMIT and detected >= {".h", ".cpp"}:
+                    # Stop early once we've sampled enough files and found at least one extension
+                    if count >= AUTO_DETECT_SAMPLE_LIMIT and detected:
                         break
         return detected if detected else DEFAULT_FALLBACK_EXTENSIONS
     else:

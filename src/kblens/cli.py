@@ -80,6 +80,7 @@ from .writer import (
     save_meta,
     save_meta_component,
     save_meta_failed,
+    strip_ast_section,
     write_component_incremental,
     write_knowledge_base,
 )
@@ -703,14 +704,12 @@ async def _process_one_component(
             return None
 
         # ---- Phase 4: leaf summaries (batches concurrent via llm_semaphore) ----
+        detected_langs = {e.language for e in ast_map.values() if e.language}
+        lang_str = ", ".join(sorted(detected_langs)) or "unknown"
+
         async def _do_batch(batch):
             async with llm_semaphore:
                 ast_content, dir_tree = _build_batch_content(batch, ast_map)
-                detected_langs = set()
-                for entry in ast_map.values():
-                    if entry.language:
-                        detected_langs.add(entry.language)
-                lang_str = ", ".join(sorted(detected_langs)) or "unknown"
                 prompt = LEAF_PROMPT.format(
                     package_name=comp.package_name,
                     component_name=comp.name,
@@ -829,8 +828,7 @@ async def _process_one_component(
             plog.llm_call("component", comp.key, in_t, out_t)
 
         # Detect primary language from AST entries for code block highlighting
-        _langs = {e.language for e in ast_map.values() if e.language}
-        detected_lang = next(iter(sorted(_langs)), "cpp")
+        detected_lang = next(iter(sorted(detected_langs)), "cpp")
 
         cr = ComponentResult(
             component=comp,
@@ -1017,6 +1015,7 @@ async def _run_summarization_live(
                         )
                         if md_path.exists():
                             txt = md_path.read_text(encoding="utf-8")
+                            txt = strip_ast_section(txt)
                             comp_overviews[comp.name] = (txt, comp.file_count)
                         else:
                             # Component exists but has no .md
@@ -1082,6 +1081,10 @@ async def _run_summarization_live(
                 md_path = Path(config.output_dir) / source_name / f"{pkg_name}.md"
                 if md_path.exists():
                     txt = md_path.read_text(encoding="utf-8")
+                    # Strip leading '# ...' title line so format matches LLM raw output
+                    # from dirty packages (which have no title prefix).
+                    if txt.startswith("# "):
+                        txt = txt.split("\n", 1)[1].lstrip("\n") if "\n" in txt else ""
                     package_overviews[pkg_key] = (txt, source_name)
 
             try:

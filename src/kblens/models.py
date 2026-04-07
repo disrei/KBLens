@@ -286,7 +286,7 @@ class MetaInfo:
     """Generation metadata (_meta.json)."""
 
     generated_at: str = ""
-    generator_version: str = "0.1.0"
+    generator_version: str = ""
     config_hash: str = ""
     llm_model: str = ""
     total_components: int = 0

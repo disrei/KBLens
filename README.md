@@ -12,7 +12,7 @@
 
 English | [中文](README_zh.md)
 
-A progressive-disclosure code knowledge base generator for large C++ codebases. KBLens uses tree-sitter to extract AST skeletons, packs them into LLM-friendly batches, and generates hierarchical Markdown summaries — giving AI coding assistants structured context about your codebase without reading every file.
+A progressive-disclosure code knowledge base generator for large codebases. KBLens uses tree-sitter to extract AST skeletons from C++, Python, TypeScript, and JavaScript source files, packs them into LLM-friendly batches, and generates hierarchical Markdown summaries — giving AI coding assistants structured context about your codebase without reading every file.
 
 ## Why KBLens
 
@@ -30,7 +30,8 @@ This gives AI assistants a reliable, searchable reference — like an always-up-
 
 ## Key Features
 
-- **AST-based extraction** — Uses tree-sitter to extract class/struct/enum/function signatures from C++ headers and source files. No guessing, no hallucination.
+- **AST-based extraction** — Uses tree-sitter to extract class/struct/enum/function signatures from C++, Python, TypeScript, and JavaScript source files. No guessing, no hallucination.
+- **Hybrid output** — LLM generates concise summaries (responsibility, types, dependencies), while raw AST signatures are appended directly to output files. Zero truncation, minimal LLM output tokens.
 - **Hierarchical summaries** — Three levels of detail (project → package → component) with progressive disclosure. Ask about a package, get the overview. Ask about a class, get the details.
 - **Incremental updates** — Only regenerates components whose source files changed. Tracks changes via file hash. A full run on 200+ components takes ~5 minutes; incremental runs take seconds.
 - **Change detection** — Five-way classification (unchanged / changed / new / deleted / failed) with automatic cleanup of orphaned files and cascade updates to affected packages.
@@ -242,34 +243,51 @@ For a project with two sources:
 
 ### Markdown Format
 
-Each L2 component file follows a consistent structure:
+Each L2 component file follows a two-section structure:
+
+**Section 1: LLM-generated summary** (concise, architecture-focused)
 
 ```markdown
-# ComponentName
-
 ## Responsibility
 One-to-two sentence description of what this component does.
 
 ## Key Types and Relationships
 Classes, structs, enums and how they relate.
 
-## Main Public Interfaces
-Key methods with signatures.
+## Source Files
+List of source file paths grouped by role.
 
 ## Dependencies
 Explicit #include paths or "No explicit dependencies visible in AST excerpt."
 ```
+
+**Section 2: Raw AST signatures** (appended after a `---` separator)
+
+```markdown
+---
+
+## Complete API Signatures
+
+​```cpp
+// --- path/to/file.h ---
+class MyClass {
+    void MyMethod(int param);
+};
+​```
+```
+
+This hybrid approach keeps LLM output costs low (summaries only) while preserving complete, untruncated API signatures directly from tree-sitter extraction. The raw signatures are never passed to higher-level LLM prompts — they are only written to the final Markdown files.
 
 ## How It Works
 
 KBLens runs a six-phase pipeline for each source:
 
 1. **Scan** — Walk the directory tree, discover components (package/subdir pairs), count files and lines
-2. **AST Extract** — Parse C++ files with tree-sitter, extract class/struct/enum/function skeletons and `#include` directives
+2. **AST Extract** — Parse source files with tree-sitter, extract class/struct/enum/function skeletons and `#include` directives
 3. **Pack** — Group AST entries into token-budgeted batches, create aggregation groups for large components
-4. **Leaf Summarize** — Send each batch to the LLM for a focused summary (Phase 4)
-5. **Aggregate** — Merge leaf summaries upward: fragments → component overview → package overview → INDEX (Phase 5a-5d)
-6. **Write** — Persist Markdown files and update `_meta.json` incrementally
+4. **Leaf Summarize** — Send each batch to the LLM for a focused summary; raw AST signatures are preserved separately for direct inclusion in output files (Phase 4)
+5. **Aggregate** — Merge summaries upward: fragments → component overview → package overview → INDEX. Higher-level prompts receive only concise summaries (no raw signatures), keeping token costs low (Phase 5a-5d)
+6. **Write** — Persist Markdown files (summary + appended AST signatures) and update `_meta.json` incrementally
 
 ### Incremental Behavior
 
@@ -378,6 +396,7 @@ The knowledge base is plain Markdown files. You can integrate it with any AI too
 ## Notes
 
 - The knowledge base uses **absolute paths** in `_meta.json` for change tracking. If you move your source code directory, regenerate the knowledge base with `kblens generate`.
+- **Hybrid output mode**: LLM only generates concise summaries (~400 tokens per batch). Raw AST signatures are appended directly from tree-sitter output, so they are never truncated or hallucinated. Higher-level prompts (package → INDEX) only receive summaries, not raw signatures, keeping aggregation costs low.
 - LLM model compatibility: KBLens uses [litellm](https://github.com/BerriAI/litellm) under the hood, so any model supported by litellm will work (OpenAI, Anthropic, local Ollama, etc.).
 
 ## License

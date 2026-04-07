@@ -85,6 +85,23 @@ def _append_ast_section(summary: str, ast_text: str, language: str = "cpp") -> s
     )
 
 
+def strip_ast_section(text: str) -> str:
+    """Remove the appended AST signatures section from .md content.
+
+    The AST section is separated by a ``\\n---\\n`` marker added by
+    ``_append_ast_section``.  Everything from the **first** marker onward
+    is stripped.  For small components whose .md contains multiple
+    sub-module sections (also ``---``-delimited), this effectively keeps
+    only the top-level overview — which is the intended input for
+    higher-level (package / index) LLM prompts.
+    """
+    marker = "\n---\n"
+    idx = text.find(marker)
+    if idx >= 0:
+        return text[:idx].rstrip()
+    return text
+
+
 def write_component_incremental(config: Config, cr: ComponentResult) -> None:
     """Write a single component's Markdown immediately after it is generated.
 
