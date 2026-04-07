@@ -40,12 +40,12 @@ python -m build                  # Build wheel + sdist into dist/
 - **Concurrency**: components process in parallel (semaphore-limited), each component's batches also run concurrently. Two separate semaphores: `max_concurrent_components` and `max_concurrent`.
 - **Incremental**: `_meta.json` tracks per-component hashes (path + mtime + size). Unchanged components skip all phases. Failed components auto-retry on next run.
 - **Config resolution order**: env var → `.local.yaml` sibling → base YAML. Both `sources` and `source_dirs` keys accepted for the source list.
-- **Version** lives in `src/kblens/__init__.py` (`__version__`). Update it there; `pyproject.toml` reads it.
+- **Version** lives in both `src/kblens/__init__.py` (`__version__`) and `pyproject.toml` (`version`). Update both when bumping.
 
 ## Gotchas
 
 - `kblens.local.yaml` and `kblens.yaml` are gitignored — they hold project-specific paths and API keys. Do **not** commit them.
-- `dist/` contains stale build artifacts (0.2.3 while code is 0.2.4). Rebuild with `python -m build` if needed.
+- `dist/` may contain stale build artifacts. Rebuild with `python -m build` if needed. Clean `build/` and `src/kblens.egg-info/` before rebuilding to avoid version caching.
 - tree-sitter requires a C compiler at install time (see README Prerequisites).
 - `ast_extract.py` skips files > 1 MB (`MAX_FILE_SIZE`) to prevent tree-sitter freezes on giant generated files.
 - Components with < 50 AST tokens (`MIN_AST_TOKENS_FOR_LLM` in cli.py) get a static "skipped" entry in metadata, no LLM call.
