@@ -24,6 +24,10 @@ from .models import (
 
 logger = logging.getLogger("kblens.summarizer")
 
+# Track which model+api_base combinations have already been warned about prefix inference.
+# This prevents logging the same warning multiple times during a single run.
+_prefix_inference_warned: set[tuple[str, str | None]] = set()
+
 # ---------------------------------------------------------------------------
 # LLM max_tokens per phase (central place to tune output length)
 # ---------------------------------------------------------------------------
@@ -208,13 +212,16 @@ async def _llm_call(
     )
 
     if was_inferred:
-        logger.warning(
-            "Model '%s' has no provider prefix. Assuming OpenAI-compatible API at %s. "
-            "If this is wrong, set model = 'provider/model' explicitly "
-            "(e.g., 'minimax/MiniMax-M2.1' or 'openai/gpt-4o-mini').",
-            config.llm.model,
-            config.llm.api_base,
-        )
+        config_key = (config.llm.model, config.llm.api_base)
+        if config_key not in _prefix_inference_warned:
+            _prefix_inference_warned.add(config_key)
+            logger.warning(
+                "Model '%s' has no provider prefix. Assuming OpenAI-compatible API at %s. "
+                "If this is wrong, set model = 'provider/model' explicitly "
+                "(e.g., 'minimax/MiniMax-M2.1' or 'openai/gpt-4o-mini').",
+                config.llm.model,
+                config.llm.api_base,
+            )
 
     kwargs: dict[str, Any] = {
         "model": normalized_model,
@@ -255,9 +262,9 @@ async def _llm_call(
             if was_inferred and ("provider" in err_str or "not provided" in err_str):
                 logger.error(
                     "Model '%s' was auto-prefixed as 'openai/%s'. This may be incorrect. "
-                    "Try setting model explicitly in your config: "
-                    "model = 'minimax/%s' (or your provider's prefix like 'anthropic/', 'deepseek/', etc.).",
-                    config.llm.model,
+                    "Try setting model explicitly: 'openai/<model>' for OpenAI-compatible endpoints, "
+                    "or '<provider>/<model>' for native LiteLLM providers "
+                    "(e.g., 'minimax/MiniMax-M2.1', 'anthropic/claude-3-opus', 'deepseek/deepseek-chat').",
                     config.llm.model,
                     config.llm.model,
                 )
