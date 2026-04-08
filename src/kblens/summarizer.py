@@ -170,6 +170,28 @@ def _is_retryable(exc: Exception) -> bool:
     return any(s in exc_str for s in _RETRYABLE_STRINGS)
 
 
+def _normalize_model_for_litellm(model: str, api_base: str | None) -> tuple[str, bool]:
+    """Normalize model name for litellm.
+
+    litellm requires provider prefixes (e.g., 'openai/', 'anthropic/', 'minimax/').
+    Many users only have the raw model ID from their provider's dashboard.
+
+    This function auto-adds 'openai/' prefix when:
+    - model has no '/' (no provider prefix)
+    - api_base is set (suggests OpenAI-compatible endpoint)
+
+    Returns:
+        (normalized_model, was_inferred): The model name to use and whether prefix was auto-added.
+    """
+    if "/" in model:
+        return model, False
+
+    if not api_base:
+        return model, False
+
+    return f"openai/{model}", True
+
+
 async def _llm_call(
     prompt: str,
     config: Config,
@@ -181,8 +203,21 @@ async def _llm_call(
     Returns (response_text, input_tokens, output_tokens).
     Retries up to LLM_MAX_RETRIES times on transient errors (timeout, 429, 5xx).
     """
+    normalized_model, was_inferred = _normalize_model_for_litellm(
+        config.llm.model, config.llm.api_base
+    )
+
+    if was_inferred:
+        logger.warning(
+            "Model '%s' has no provider prefix. Assuming OpenAI-compatible API at %s. "
+            "If this is wrong, set model = 'provider/model' explicitly "
+            "(e.g., 'minimax/MiniMax-M2.1' or 'openai/gpt-4o-mini').",
+            config.llm.model,
+            config.llm.api_base,
+        )
+
     kwargs: dict[str, Any] = {
-        "model": config.llm.model,
+        "model": normalized_model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
@@ -216,6 +251,16 @@ async def _llm_call(
             return text, in_tok, out_tok
         except Exception as e:
             last_exc = e
+            err_str = str(e).lower()
+            if was_inferred and ("provider" in err_str or "not provided" in err_str):
+                logger.error(
+                    "Model '%s' was auto-prefixed as 'openai/%s'. This may be incorrect. "
+                    "Try setting model explicitly in your config: "
+                    "model = 'minimax/%s' (or your provider's prefix like 'anthropic/', 'deepseek/', etc.).",
+                    config.llm.model,
+                    config.llm.model,
+                    config.llm.model,
+                )
             if attempt < LLM_MAX_RETRIES and _is_retryable(e):
                 delay = min(
                     LLM_RETRY_BASE_DELAY * (2 ** (attempt - 1)) + random.uniform(0, 1),
