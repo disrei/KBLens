@@ -6,6 +6,8 @@ import asyncio
 import json
 import logging
 import os
+import platform
+import subprocess
 import time
 import traceback
 from collections import defaultdict
@@ -84,6 +86,61 @@ from .writer import (
     write_component_incremental,
     write_knowledge_base,
 )
+
+ENV_VAR_NAME = "KBLENS_KB_PATH"
+
+
+def _set_kb_env_var(output_dir: str) -> None:
+    """Set KBLENS_KB_PATH as a persistent user-level environment variable.
+
+    This lets coding-agent skills locate the knowledge base instantly via
+    ``os.environ["KBLENS_KB_PATH"]`` instead of parsing config files.
+
+    * **Windows**: uses ``setx`` (user-level, survives reboots).
+    * **macOS / Linux**: writes an ``export`` line to the appropriate shell rc
+      file (``~/.zshrc`` or ``~/.bashrc``).
+
+    The current process' ``os.environ`` is also updated so that any
+    downstream code (e.g. skill install) can read the value immediately.
+    """
+    resolved = str(Path(output_dir).resolve())
+    os.environ[ENV_VAR_NAME] = resolved
+
+    if platform.system() == "Windows":
+        try:
+            subprocess.run(
+                ["setx", ENV_VAR_NAME, resolved],
+                check=True,
+                capture_output=True,
+            )
+            console.print(
+                f"[dim]Set user env {ENV_VAR_NAME}={resolved} (effective in new terminals)[/dim]"
+            )
+        except Exception as exc:
+            console.print(
+                f"[yellow]Warning:[/yellow] Failed to persist {ENV_VAR_NAME} via setx: {exc}"
+            )
+    else:
+        # macOS / Linux — append export line to shell rc file
+        shell = os.environ.get("SHELL", "")
+        rc_file = Path.home() / (".zshrc" if "zsh" in shell else ".bashrc")
+        export_line = f'export {ENV_VAR_NAME}="{resolved}"'
+        try:
+            existing = rc_file.read_text(encoding="utf-8") if rc_file.exists() else ""
+            # Remove any old KBLENS_KB_PATH line, then append the new one
+            lines = [
+                ln
+                for ln in existing.splitlines()
+                if not ln.strip().startswith(f"export {ENV_VAR_NAME}=")
+            ]
+            lines.append(export_line)
+            rc_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            console.print(f"[dim]Wrote {ENV_VAR_NAME} to {rc_file} (effective in new shells)[/dim]")
+        except Exception as exc:
+            console.print(
+                f"[yellow]Warning:[/yellow] Failed to persist {ENV_VAR_NAME} in {rc_file}: {exc}"
+            )
+
 
 app = typer.Typer(
     name="kblens",
@@ -459,6 +516,11 @@ def generate(
 
         if len(sources_to_run) > 1:
             console.print()
+
+    # Persist output_dir as KBLENS_KB_PATH so agent skills can locate the KB
+    # without reading config files.  Skip for dry-run (nothing was written).
+    if not dry_run:
+        _set_kb_env_var(config.output_dir)
 
 
 def _generate_one_source(config: Config, dry_run: bool) -> None:
