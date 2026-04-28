@@ -12,7 +12,7 @@
 
 English | [中文](README_zh.md)
 
-A progressive-disclosure code knowledge base generator for large codebases. KBLens uses tree-sitter to extract AST skeletons from C++, Python, TypeScript, and JavaScript source files, packs them into LLM-friendly batches, and generates hierarchical Markdown summaries — giving AI coding assistants structured context about your codebase without reading every file.
+A progressive-disclosure code knowledge base generator for large codebases. KBLens uses tree-sitter to extract AST skeletons from C++, C#, Python, TypeScript, and JavaScript source files, packs them into LLM-friendly batches, and generates hierarchical Markdown summaries — giving AI coding assistants structured context about your codebase without reading every file.
 
 ## Why KBLens
 
@@ -30,7 +30,7 @@ This gives AI assistants a reliable, searchable reference — like an always-up-
 
 ## Key Features
 
-- **AST-based extraction** — Uses tree-sitter to extract class/struct/enum/function signatures from C++, Python, TypeScript, and JavaScript source files. No guessing, no hallucination.
+- **AST-based extraction** — Uses tree-sitter to extract class/struct/enum/function signatures from C++, C#, Python, TypeScript, and JavaScript source files. No guessing, no hallucination.
 - **Hybrid output** — LLM generates concise summaries (responsibility, types, dependencies), while raw AST signatures are appended directly to output files. Zero truncation, minimal LLM output tokens.
 - **Hierarchical summaries** — Three levels of detail (project → package → component) with progressive disclosure. Ask about a package, get the overview. Ask about a class, get the details.
 - **Incremental updates** — Only regenerates components whose source files changed. Tracks changes via file hash. A full run on 200+ components takes ~5 minutes; incremental runs take seconds.
@@ -334,6 +334,7 @@ Each component's identity is a hash of `(relative_path, mtime, size)` for all co
 Currently supports:
 
 - **C++** (`.h`, `.hpp`, `.cpp`, `.cc`, `.cxx`) — classes, structs, enums, free functions, templates, supplementary `.cpp` extraction
+- **C#** (`.cs`) — classes, structs, interfaces, records, enums, delegates, generics with constraints, attributes, XML doc comments, properties, events; only public/protected/internal members are kept
 - **Python** (`.py`, `.pyi`) — classes with public methods, module-level functions, type-annotated constants, decorators, docstrings, `__all__`; private names (`_prefixed`) are automatically skipped
 - **TypeScript** (`.ts`, `.tsx`) — classes, interfaces, type aliases, enums, exported functions, arrow functions, access modifiers; `private` members and `_prefixed` names are skipped
 - **JavaScript** (`.js`, `.jsx`, `.mjs`, `.cjs`) — classes, exported functions, constants; same extraction logic as TypeScript but without type annotations
@@ -356,9 +357,9 @@ Both are auto-detected during scanning.
 Planned languages:
 
 - [x] C++
+- [x] C#
 - [x] Python
 - [x] TypeScript / JavaScript
-- [ ] C#
 - [ ] Java / Kotlin
 - [ ] Rust
 - [ ] Go
