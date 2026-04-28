@@ -26,6 +26,7 @@ kblens.yaml
 kblens.local.yaml
 kblens_kb/
 .kblens_cache/
+tmp_csharp_test/
 
 # OS
 .DS_Store

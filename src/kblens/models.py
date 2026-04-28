@@ -23,6 +23,8 @@ SUPPORTED_EXTENSIONS: set[str] = {
     # Python
     ".py",
     ".pyi",
+    # C#
+    ".cs",
     # TypeScript / JavaScript
     ".ts",
     ".tsx",
