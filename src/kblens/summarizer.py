@@ -92,6 +92,52 @@ RULES:
 - If no #include is visible, write "No explicit dependencies visible in AST excerpt."
 - Do NOT list individual function signatures — they are preserved separately from the raw AST."""
 
+DOC_LEAF_PROMPT = """\
+Package: {package_name}
+Component: {component_name} ({file_count} files)
+
+Documents: {dir_tree}
+
+```markdown
+{ast_content}
+```
+
+Summarize this documentation in {summary_language}, using Markdown. Be concise.
+The original document content will be appended separately — focus on the summary.
+
+Use these exact headings:
+
+## Topic Summary
+(2-3 sentences: what this documentation covers and its purpose)
+
+## Key Concepts and Definitions
+(important terms, concepts, or entities defined or explained in the text)
+
+## Actionable Information
+(steps, commands, configurations, or reference data that a reader would look up)
+
+## Related Topics
+(connections to other documents or topics mentioned or implied)
+
+RULES:
+- Be factual. Only describe what is visible in the document above.
+- If the document contains images, note their alt text or filenames as visual references.
+- Do NOT reproduce the full document text — it is preserved separately."""
+
+DOC_COMPONENT_PROMPT = """\
+Component: {component_name} ({file_count} files)
+
+Document section details:
+{submodule_text}
+
+Write a component overview ({summary_language}, max 400 words, Markdown):
+1. Purpose (1-2 sentences: what topics this document collection covers)
+2. Structure (how the documents and sections are organized)
+3. Key topics and concepts (list the main subjects covered)
+4. Cross-references (connections between documents mentioned in the section details)
+
+Only use information from the section details above. Do NOT invent content."""
+
 FRAGMENT_AGG_PROMPT = """\
 Partial summaries of `{parent}`:
 
@@ -236,15 +282,38 @@ async def _llm_call(
         kwargs["api_base"] = config.llm.api_base
     if config.llm._resolved_api_key:
         kwargs["api_key"] = config.llm._resolved_api_key
+    if config.llm.extra_body:
+        kwargs["extra_body"] = config.llm.extra_body
 
     last_exc: Exception | None = None
+    _thinking_warned = False
     for attempt in range(1, LLM_MAX_RETRIES + 1):
         try:
             response = await litellm.acompletion(**kwargs)
             text = response.choices[0].message.content or ""
             if not text.strip():
+                # Check if the model produced reasoning_content instead of content
+                # (thinking models like Qwen3.5, DeepSeek-R1, etc.)
+                msg = response.choices[0].message
+                has_reasoning = bool(
+                    getattr(msg, "reasoning_content", None)
+                    or (hasattr(msg, "model_extra") and msg.model_extra.get("reasoning_content"))
+                )
+                if has_reasoning and not _thinking_warned:
+                    _thinking_warned = True
+                    logger.error(
+                        "LLM returned empty content but has reasoning_content — "
+                        "the model is in 'thinking mode' and all output went to "
+                        "internal reasoning. Disable thinking in your kblens config:\n"
+                        "\n"
+                        "  llm:\n"
+                        "    extra_body:\n"
+                        "      chat_template_kwargs:\n"
+                        "        enable_thinking: false\n"
+                    )
                 raise ValueError(
-                    "LLM returned empty content (model may have refused or hit a content filter)"
+                    "LLM returned empty content"
+                    + (" (thinking mode detected — see above for fix)" if has_reasoning else "")
                 )
             finish_reason = getattr(response.choices[0], "finish_reason", None)
             if finish_reason == "length":
@@ -303,8 +372,14 @@ async def _llm_call(
 def _build_batch_content(
     batch: Batch,
     ast_map: dict[str, ASTEntry],
+    separator_format: str = "code",
 ) -> tuple[str, str]:
-    """Build the AST content and dir tree for a batch."""
+    """Build the AST content and dir tree for a batch.
+
+    Args:
+        separator_format: ``"code"`` uses ``// --- path ---`` separators;
+                          ``"doc"`` uses ``### From: path`` separators.
+    """
     batch_dirs = set(batch.dirs)
     dir_tree = ", ".join(sorted(batch_dirs)) if batch_dirs else "(root)"
 
@@ -312,7 +387,10 @@ def _build_batch_content(
     for rel_path, entry in sorted(ast_map.items()):
         d = entry.dir or "."
         if d in batch_dirs or (d == "" and ("" in batch_dirs or "." in batch_dirs)):
-            ast_lines.append(f"// --- {rel_path} ---")
+            if separator_format == "doc":
+                ast_lines.append(f"### From: {rel_path}")
+            else:
+                ast_lines.append(f"// --- {rel_path} ---")
             ast_lines.append(entry.content)
             ast_lines.append("")
 

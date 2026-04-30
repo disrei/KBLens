@@ -62,7 +62,10 @@ from .models import (
 from .packer import phase3_pack
 from .progress import ProgressLog
 from .scanner import phase1_scan, resolve_include_extensions
+from .section_extract import phase2_extract_docs
 from .summarizer import (
+    DOC_COMPONENT_PROMPT,
+    DOC_LEAF_PROMPT,
     LEAF_PROMPT,
     _build_batch_content,
     _compute_leaf_max_tokens,
@@ -529,10 +532,30 @@ def _generate_one_source(config: Config, dry_run: bool) -> None:
     include_exts = resolve_include_extensions(config)
 
     src_name = config.source_dirs[0].name if config.source_dirs else "unknown"
+    src_type = config.source_dirs[0].type if config.source_dirs else "code"
     console.print(f"[bold cyan]Source:[/bold cyan] {src_name}")
+    if src_type == "document":
+        console.print(f"Source type:    [cyan]document[/cyan]")
     console.print(f"File extensions: {sorted(include_exts)}")
     console.print(f"Output:         {config.output_dir}")
     console.print()
+
+    # ---- Pre-flight check: markitdown for document sources ----
+    if src_type == "document":
+        non_text_exts = include_exts - {".md", ".txt"}
+        if non_text_exts:
+            from .doc_convert import _get_markitdown
+
+            if _get_markitdown() is None:
+                console.print(
+                    "[yellow]Warning:[/yellow] Document source includes non-text formats "
+                    f"({', '.join(sorted(non_text_exts))}) but [bold]markitdown[/bold] "
+                    "is not installed.\n"
+                    "  Files in these formats will be skipped.\n"
+                    "  Install with: [bold]pip install 'kblens[docs]'[/bold] "
+                    "or [bold]pip install markitdown[/bold]"
+                )
+                console.print()
 
     # ---- Phase 1: Scan ----
     plog.phase_start("1-scan")
@@ -593,9 +616,17 @@ def _generate_one_source(config: Config, dry_run: bool) -> None:
             f"({', '.join(sorted(p.split('/')[-1] for p in dirty_packages))})"
         )
 
-    # ---- Phase 2: AST extraction (only for non-skipped) ----
-    plog.phase_start("2-ast")
-    console.print("[bold cyan]Phase 2:[/bold cyan] Extracting AST skeletons...")
+    # ---- Phase 2: Content extraction (only for non-skipped) ----
+    source_type = config.source_dirs[0].type if config.source_dirs else "code"
+    is_doc = source_type == "document"
+
+    if is_doc:
+        plog.phase_start("2-doc-extract")
+        console.print("[bold cyan]Phase 2:[/bold cyan] Extracting document sections...")
+    else:
+        plog.phase_start("2-ast")
+        console.print("[bold cyan]Phase 2:[/bold cyan] Extracting AST skeletons...")
+
     ast_data: dict[str, dict] = {}
     total_entries = 0
     to_extract = [c for c in components if c.key not in skip_keys]
@@ -613,15 +644,32 @@ def _generate_one_source(config: Config, dry_run: bool) -> None:
         for i, comp in enumerate(to_extract):
             short = comp.key.split("/")[-1]
             prog.update(task, current=f"[dim]{short} ({comp.file_count} files)[/dim]")
-            ast_map = phase2_extract_ast(comp, config, include_exts)
+            if is_doc:
+                src_dir = config.source_dirs[0]
+                ast_map = phase2_extract_docs(
+                    comp,
+                    config,
+                    include_exts,
+                    section_level=src_dir.section_level,
+                    image_handling=src_dir.image_handling,
+                )
+            else:
+                ast_map = phase2_extract_ast(comp, config, include_exts)
             ast_data[comp.key] = ast_map
             total_entries += len(ast_map)
             prog.update(task, advance=1)
+
+    entry_label = "document sections" if is_doc else "AST entries"
     console.print(
-        f"  Extracted [green]{total_entries}[/green] AST entries from {len(to_extract)} components"
+        f"  Extracted [green]{total_entries}[/green] {entry_label} "
+        f"from {len(to_extract)} components"
     )
-    plog.ast_done(total_entries)
-    plog.phase_done("2-ast")
+    if is_doc:
+        plog.ast_done(total_entries)
+        plog.phase_done("2-doc-extract")
+    else:
+        plog.ast_done(total_entries)
+        plog.phase_done("2-ast")
 
     # ---- Phase 3: Packing (only for non-skipped) ----
     plog.phase_start("3-pack")
@@ -768,22 +816,42 @@ async def _process_one_component(
         # ---- Phase 4: leaf summaries (batches concurrent via llm_semaphore) ----
         detected_langs = {e.language for e in ast_map.values() if e.language}
         lang_str = ", ".join(sorted(detected_langs)) or "unknown"
+        is_doc = config.source_dirs[0].type == "document" if config.source_dirs else False
+        leaf_prompt_tpl = DOC_LEAF_PROMPT if is_doc else LEAF_PROMPT
+        system_msg = (
+            "You are a concise documentation summarizer. Be factual and brief."
+            if is_doc
+            else "You are a concise code documentation writer. Be factual and brief."
+        )
 
         async def _do_batch(batch):
             async with llm_semaphore:
-                ast_content, dir_tree = _build_batch_content(batch, ast_map)
-                prompt = LEAF_PROMPT.format(
-                    package_name=comp.package_name,
-                    component_name=comp.name,
-                    file_count=comp.file_count,
-                    total_lines=comp.total_lines,
-                    detected_languages=lang_str,
-                    dir_tree=dir_tree,
-                    ast_content=ast_content,
-                    summary_language=config.summary_language,
-                )
+                sep_fmt = "doc" if is_doc else "code"
+                ast_content, dir_tree = _build_batch_content(batch, ast_map, sep_fmt)
+                if is_doc:
+                    prompt = leaf_prompt_tpl.format(
+                        package_name=comp.package_name,
+                        component_name=comp.name,
+                        file_count=comp.file_count,
+                        dir_tree=dir_tree,
+                        ast_content=ast_content,
+                        summary_language=config.summary_language,
+                    )
+                else:
+                    prompt = leaf_prompt_tpl.format(
+                        package_name=comp.package_name,
+                        component_name=comp.name,
+                        file_count=comp.file_count,
+                        total_lines=comp.total_lines,
+                        detected_languages=lang_str,
+                        dir_tree=dir_tree,
+                        ast_content=ast_content,
+                        summary_language=config.summary_language,
+                    )
                 max_out = _compute_leaf_max_tokens(batch.tokens)
-                text, in_tok, out_tok = await _llm_call(prompt, config, max_tokens=max_out)
+                text, in_tok, out_tok = await _llm_call(
+                    prompt, config, max_tokens=max_out, system=system_msg,
+                )
                 return BatchSummary(
                     batch=batch,
                     summary=text,
@@ -890,7 +958,7 @@ async def _process_one_component(
             plog.llm_call("component", comp.key, in_t, out_t)
 
         # Detect primary language from AST entries for code block highlighting
-        detected_lang = next(iter(sorted(detected_langs)), "cpp")
+        detected_lang = "markdown" if is_doc else next(iter(sorted(detected_langs)), "cpp")
 
         cr = ComponentResult(
             component=comp,

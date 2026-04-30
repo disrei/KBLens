@@ -6,19 +6,21 @@
 ██║  ██╗██████╔╝      ███████╗███████╗██║ ╚████║███████║
 ╚═╝  ╚═╝╚═════╝       ╚══════╝╚══════╝╚═╝  ╚═══╝╚══════╝
 ═══════════════════════════════════════════════════════════
-           Knowledge Base Lens · Code Intelligence
+     Knowledge Base Lens · Code & Document Intelligence
 ═══════════════════════════════════════════════════════════
 ```
 
 English | [中文](README_zh.md)
 
-A progressive-disclosure code knowledge base generator for large codebases. KBLens uses tree-sitter to extract AST skeletons from C++, C#, Python, TypeScript, and JavaScript source files, packs them into LLM-friendly batches, and generates hierarchical Markdown summaries — giving AI coding assistants structured context about your codebase without reading every file.
+A progressive-disclosure knowledge base generator for large codebases and document collections. KBLens uses tree-sitter to extract AST skeletons from source code, and markitdown to convert documents from various formats (PDF, DOCX, PPTX, HTML, etc.) to Markdown. Both are packed into LLM-friendly batches and summarized into hierarchical Markdown — giving AI assistants structured context without reading every file.
 
 ## Why KBLens
 
 When doing **vibe coding** — using AI assistants (Cursor, Copilot, OpenCode, etc.) to write and refactor code through natural language — the AI needs to understand your codebase's architecture. But large codebases (100K+ files) are too big for LLMs to consume directly. Without structured context, AI assistants either hallucinate or say "I don't know" when asked about internal systems.
 
-KBLens solves this by generating a **three-layer knowledge base** from your actual source code:
+The same problem applies to **document collections** — internal wikis, technical docs, design specs, API references. They contain critical knowledge but are scattered across formats and too large for LLMs to ingest as-is.
+
+KBLens solves both by generating a **three-layer knowledge base** from your actual source code and documents:
 
 ```
 L0  INDEX.md            Project overview + package directory
@@ -26,20 +28,22 @@ L1  packages/engine.md  Per-package component listing and architecture
 L2  packages/engine/    Per-component: purpose, key types, public APIs, dependencies
 ```
 
-This gives AI assistants a reliable, searchable reference — like an always-up-to-date architecture document generated from actual code. Point your AI tool at the knowledge base, and it can answer questions like "how does the physics system work?" or "what's the public API of SmartDrive?" without reading every source file.
+This gives AI assistants a reliable, searchable reference — like an always-up-to-date architecture document generated from actual code and docs. Point your AI tool at the knowledge base, and it can answer questions like "how does the physics system work?" or "what's the configuration reference for deployment?" without reading every source file.
 
 ## Key Features
 
-- **AST-based extraction** — Uses tree-sitter to extract class/struct/enum/function signatures from C++, C#, Python, TypeScript, and JavaScript source files. No guessing, no hallucination.
-- **Hybrid output** — LLM generates concise summaries (responsibility, types, dependencies), while raw AST signatures are appended directly to output files. Zero truncation, minimal LLM output tokens.
-- **Hierarchical summaries** — Three levels of detail (project → package → component) with progressive disclosure. Ask about a package, get the overview. Ask about a class, get the details.
+- **Dual mode** — Processes both code (via tree-sitter AST extraction) and documents (via markitdown conversion + section splitting) through the same pipeline
+- **AST-based code extraction** — Uses tree-sitter to extract class/struct/enum/function signatures from C++, C#, Python, TypeScript, and JavaScript source files. No guessing, no hallucination.
+- **Document format support** — PDF, DOCX, PPTX, XLSX, HTML, CSV, EPUB, and more via [markitdown](https://github.com/microsoft/markitdown). Documents are converted to Markdown, split by heading level, and summarized.
+- **Hybrid output** — LLM generates concise summaries, while raw content (AST signatures for code, original text for documents) is appended directly. Zero truncation, minimal LLM output tokens.
+- **Hierarchical summaries** — Three levels of detail (project → package → component) with progressive disclosure. Ask about a package, get the overview. Ask about a class or document section, get the details.
 - **Incremental updates** — Only regenerates components whose source files changed. Tracks changes via file hash. A full run on 200+ components takes ~5 minutes; incremental runs take seconds.
+- **Local LLM support** — Works with local models via llama.cpp, Ollama, or any OpenAI-compatible API. Includes thinking-mode detection for models like Qwen3.5 and DeepSeek-R1.
 - **Change detection** — Five-way classification (unchanged / changed / new / deleted / failed) with automatic cleanup of orphaned files and cascade updates to affected packages.
-- **Multi-source projects** — One config file can define multiple source directories. Each source gets its own independent knowledge base with separate INDEX, metadata, and change tracking.
+- **Multi-source projects** — One config file can define multiple source directories with different types (code or document). Each source gets its own independent knowledge base.
 - **Concurrent generation** — Processes 8 components in parallel with 8 concurrent LLM calls. Includes exponential backoff retry (3 attempts) for transient failures.
 - **Resume from interruption** — Progress is persisted after each component. Ctrl+C and re-run to continue where you left off.
 - **Live dashboard** — Rich terminal UI showing real-time progress, active components, token usage, and error count.
-- **Anti-hallucination prompts** — LLM prompts explicitly forbid speculative language and invented content. Dependencies are only listed when `#include` directives are visible in the AST.
 
 ## Prerequisites
 
@@ -52,8 +56,14 @@ This gives AI assistants a reliable, searchable reference — like an always-up-
 ## Installation
 
 ```bash
-# From PyPI
+# From PyPI (code knowledge base only)
 pip install kblens
+
+# With document format support (PDF, DOCX, PPTX, HTML, etc.)
+pip install 'kblens[docs]'
+
+# With full document format support (all markitdown backends)
+pip install 'kblens[docs-all]'
 
 # Upgrade to latest version
 pip install --upgrade kblens
@@ -64,11 +74,21 @@ pip install git+https://github.com/disrei/KBLens.git
 # Or clone and install in development mode
 git clone https://github.com/disrei/KBLens.git
 cd kblens
-pip install -e .
+pip install -e .            # code only
+pip install -e ".[docs]"    # + document support
 
 # Verify
 kblens version
 ```
+
+### Install Extras
+
+| Extra | Command | What It Adds |
+|-------|---------|--------------|
+| (none) | `pip install kblens` | Code KB (C++, C#, Python, TS/JS) + documents (.md, .txt only) |
+| `docs` | `pip install 'kblens[docs]'` | + PDF, DOCX, PPTX, XLSX, HTML, CSV, EPUB via markitdown |
+| `docs-all` | `pip install 'kblens[docs-all]'` | + all markitdown optional backends |
+| `dev` | `pip install 'kblens[dev]'` | + pytest, ruff |
 
 ## Quick Start
 
@@ -85,20 +105,24 @@ Or create it manually:
 ```yaml
 # ~/.config/kblens/config.yaml
 version: 1
-project: "my_engine"
+project: "my_project"
 
-output_dir: "~/kblens_kb/my_engine"
+output_dir: "~/kblens_kb/my_project"
 
 sources:
-  - path: "/absolute/path/to/packages"
-    name: "core"
+  # Code source — uses AST extraction
+  - path: "/path/to/src"
+    name: "source-code"
+
+  # Document source — uses markitdown + section splitting
+  - path: "/path/to/docs"
+    name: "project-docs"
+    type: "document"
 
 llm:
   model: "gpt-4o-mini"
   # api_key: "your-api-key"     # see "API Key Security" below
   temperature: 0.2
-  max_concurrent: 8
-  max_concurrent_components: 8
 
 summary_language: "en"
 ```
@@ -109,7 +133,7 @@ summary_language: "en"
 kblens generate --dry-run
 ```
 
-This scans your source, extracts AST, and reports statistics without calling the LLM.
+This scans your source, extracts AST / document sections, and reports statistics without calling the LLM.
 
 ### 3. Generate
 
@@ -126,6 +150,132 @@ The generated knowledge base is a directory of Markdown files. You can:
 - **Browse directly** — Open `INDEX.md` and navigate through the hierarchy
 - **Search with grep** — Find any class, function, or concept across all summaries
 - **Integrate with AI tools** — Point your coding assistant's skill/tool at the knowledge base directory (see [AI Assistant Integration](#ai-assistant-integration) below)
+
+## Document Knowledge Base
+
+KBLens can generate knowledge bases from document collections — technical docs, wikis, design specs, API references, etc.
+
+### Supported Formats
+
+| Format | Extensions | Requirement |
+|--------|-----------|-------------|
+| Markdown | `.md` | Built-in (no extra deps) |
+| Plain text | `.txt` | Built-in |
+| PDF | `.pdf` | `pip install 'kblens[docs]'` |
+| Word | `.docx`, `.doc` | `pip install 'kblens[docs]'` |
+| PowerPoint | `.pptx` | `pip install 'kblens[docs]'` |
+| Excel | `.xlsx`, `.xls` | `pip install 'kblens[docs]'` |
+| HTML | `.html`, `.htm` | `pip install 'kblens[docs]'` |
+| CSV | `.csv` | `pip install 'kblens[docs]'` |
+| EPUB | `.epub` | `pip install 'kblens[docs]'` |
+| Jupyter | `.ipynb` | `pip install 'kblens[docs]'` |
+
+Format conversion is powered by [markitdown](https://github.com/microsoft/markitdown) (Microsoft).
+
+### How It Works (Documents)
+
+The document pipeline replaces the AST extraction phase with:
+
+1. **Convert** — Non-Markdown files are converted to Markdown via markitdown
+2. **Section Extract** — Markdown is split by heading level (default: `##`) into sections
+3. **Image Handling** — Image references are preserved as `[Image: alt text](path)` for searchability
+
+The rest of the pipeline (packing, LLM summarization, aggregation, writing) is shared with the code path.
+
+### Document Source Configuration
+
+```yaml
+sources:
+  - path: "/path/to/docs"
+    name: "project-docs"
+    type: "document"            # Required: tells KBLens to use document pipeline
+    section_level: 2            # Split on ## headings (default: 2)
+    image_handling: "reference"  # Keep image refs (default: "reference", or "ignore")
+```
+
+### Document Output Format
+
+Each leaf node in the document knowledge base has two sections:
+
+```markdown
+# Component Name
+
+## Topic Summary
+What this documentation covers and its purpose.
+
+## Key Concepts and Definitions
+Important terms, entities, and definitions.
+
+## Actionable Information
+Steps, commands, configurations, reference data.
+
+## Related Topics
+Connections to other documents.
+
+---
+
+## Original Content
+
+### From: filename.md#section-heading
+(Complete original text preserved for precise retrieval)
+```
+
+The LLM summary enables navigation and topic matching, while the original content below the `---` separator allows precise retrieval and direct quoting.
+
+## Using with Local LLMs
+
+KBLens works well with locally deployed LLMs for privacy-sensitive or cost-free usage.
+
+### Recommended Setup
+
+```bash
+# Example: llama.cpp with Qwen3.5-9B
+llama-server -m model.gguf -c 65536 --n-gpu-layers 99 --flash-attn on \
+  -b 2048 -ub 512 --port 8080 --cache-type-k q8_0 --cache-type-v q8_0 -np 1
+```
+
+### Configuration for Local LLMs
+
+```yaml
+llm:
+  model: "openai/your-model-name"
+  api_base: "http://localhost:8080/v1"
+  api_key: "not-needed"
+  temperature: 0.2
+  max_concurrent: 1               # Serial execution for local LLMs
+  max_concurrent_components: 1
+
+packing:
+  token_budget: 20000             # Larger batches = fewer LLM calls
+```
+
+### Thinking Model Support
+
+Models with built-in "thinking mode" (Qwen3.5, DeepSeek-R1, etc.) may output reasoning tokens instead of actual content by default. KBLens automatically detects this and shows a fix:
+
+```
+LLM returned empty content but has reasoning_content — the model is in
+'thinking mode'. Disable thinking in your kblens config:
+
+  llm:
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+```
+
+Add the suggested `extra_body` configuration to disable thinking mode:
+
+```yaml
+llm:
+  model: "openai/Qwen3.5-9B"
+  api_base: "http://localhost:8080/v1"
+  api_key: "not-needed"
+  extra_body:
+    chat_template_kwargs:
+      enable_thinking: false
+```
+
+The `extra_body` field passes arbitrary parameters to the LLM API, making it compatible with any server-specific options.
 
 ## API Key Security
 
@@ -169,8 +319,15 @@ project: "my_project"                # Project name (displayed in CLI)
 output_dir: "~/kblens_kb/my_project"  # Knowledge base output root
 
 sources:                              # Source directories to scan
-  - path: "/absolute/path/to/src"     # Absolute path
-    name: "core"                      # Short name (used as subdirectory)
+  - path: "/path/to/src"             # Absolute path
+    name: "core"                     # Short name (used as subdirectory)
+    # type: "code"                   # Default: "code" (AST extraction)
+
+  - path: "/path/to/docs"
+    name: "docs"
+    type: "document"                 # Document pipeline (markitdown + sections)
+    section_level: 2                 # Split on H2 headings (default: 2)
+    image_handling: "reference"      # "reference" (keep) or "ignore" (remove)
 
 include_extensions: "auto"            # "auto" or explicit list: [".h", ".cpp"]
 
@@ -185,6 +342,9 @@ llm:
   temperature: 0.2
   max_concurrent: 8                   # Concurrent LLM calls
   max_concurrent_components: 8        # Concurrent component pipelines
+  extra_body:                         # Extra params passed to LLM API
+    chat_template_kwargs:             # Example: disable thinking mode
+      enable_thinking: false
 
 packing:
   token_budget: 8000                  # Target tokens per batch
@@ -200,6 +360,7 @@ summary_language: "en"                # Language for generated summaries
 | Variable | Purpose |
 |----------|---------|
 | `KBLENS_LLM_KEY` | LLM API key (overrides config) |
+| `KBLENS_KB_PATH` | Set automatically after generation; used by AI skills to locate the KB |
 
 ## CLI Reference
 
@@ -216,82 +377,90 @@ kblens version                     # Show version
 
 ## Output Structure
 
-For a project with two sources:
+For a project with a code source and a document source:
 
 ```
 ~/kblens_kb/my_project/
-├── core/                           # Source: core
+├── source-code/                    # Source: code
 │   ├── INDEX.md                    # L0: package directory with links
 │   ├── _meta.json                  # Component status, hashes, token counts
-│   ├── _progress.jsonl             # Generation event log
-│   └── core/                       # packages (same name as source)
+│   └── source-code/
 │       ├── engine.md               # L1: engine package overview
 │       ├── engine/
-│       │   ├── SoundSystem.md      # L2: component overview
-│       │   ├── SoundSystem/        # Leaf batch files (large components)
-│       │   │   ├── src_reverb.md
-│       │   │   └── src_voice.md
+│       │   ├── SoundSystem.md      # L2: component (summary + AST signatures)
 │       │   └── Physics.md
-│       ├── gameplay.md
-│       └── gameplay/
-│           └── ...
-└── tools/                          # Source: tools
-    ├── INDEX.md
-    └── tools/
-        └── ...
+│       └── gameplay.md
+├── project-docs/                   # Source: documents
+│   ├── INDEX.md
+│   ├── _meta.json
+│   └── project-docs/
+│       ├── api.md                  # L1: api package overview
+│       ├── api/
+│       │   └── api.md              # L2: component (summary + original content)
+│       └── guides.md
 ```
 
-### Markdown Format
-
-Each L2 component file follows a two-section structure:
-
-**Section 1: LLM-generated summary** (concise, architecture-focused)
+### Code Output Format
 
 ```markdown
 ## Responsibility
-One-to-two sentence description of what this component does.
+What this component does.
 
 ## Key Types and Relationships
 Classes, structs, enums and how they relate.
 
 ## Source Files
-List of source file paths grouped by role.
+File paths grouped by role.
 
 ## Dependencies
-Explicit #include paths or "No explicit dependencies visible in AST excerpt."
-```
+Explicit #include paths.
 
-**Section 2: Raw AST signatures** (appended after a `---` separator)
-
-```markdown
 ---
 
 ## Complete API Signatures
 
 ​```cpp
-// --- path/to/file.h ---
-class MyClass {
-    void MyMethod(int param);
-};
+class MyClass { void MyMethod(int param); };
 ​```
 ```
 
-This hybrid approach keeps LLM output costs low (summaries only) while preserving complete, untruncated API signatures directly from tree-sitter extraction. The raw signatures are never passed to higher-level LLM prompts — they are only written to the final Markdown files.
+### Document Output Format
+
+```markdown
+## Topic Summary
+What this documentation covers.
+
+## Key Concepts and Definitions
+Important terms and entities.
+
+## Actionable Information
+Steps, commands, configurations.
+
+## Related Topics
+Connections to other documents.
+
+---
+
+## Original Content
+
+### From: filename.md#section-heading
+(Complete original text)
+```
 
 ## How It Works
 
 KBLens runs a six-phase pipeline for each source:
 
 1. **Scan** — Walk the directory tree, discover components (package/subdir pairs), count files and lines
-2. **AST Extract** — Parse source files with tree-sitter, extract class/struct/enum/function skeletons and `#include` directives
-3. **Pack** — Group AST entries into token-budgeted batches, create aggregation groups for large components
-4. **Leaf Summarize** — Send each batch to the LLM for a focused summary; raw AST signatures are preserved separately for direct inclusion in output files (Phase 4)
-5. **Aggregate** — Merge summaries upward: fragments → component overview → package overview → INDEX. Higher-level prompts receive only concise summaries (no raw signatures), keeping token costs low (Phase 5a-5d)
-6. **Write** — Persist Markdown files (summary + appended AST signatures) and update `_meta.json` incrementally
+2. **Extract** — For code: parse with tree-sitter, extract AST skeletons. For documents: convert formats via markitdown, split by heading level into sections.
+3. **Pack** — Group entries into token-budgeted batches, create aggregation groups for large components
+4. **Leaf Summarize** — Send each batch to the LLM for a focused summary; raw content (AST or original text) is preserved separately (Phase 4)
+5. **Aggregate** — Merge summaries upward: fragments → component overview → package overview → INDEX (Phase 5a-5d)
+6. **Write** — Persist Markdown files (summary + appended raw content) and update `_meta.json` incrementally
 
 ### Incremental Behavior
 
-KBLens is designed for daily use in active development. Just re-run `kblens generate` after code changes — it will figure out what needs updating.
+KBLens is designed for daily use in active development. Just re-run `kblens generate` after code or document changes — it will figure out what needs updating.
 
 On subsequent runs:
 
@@ -303,45 +472,19 @@ On subsequent runs:
 - **Skipped components** (< 50 AST tokens) are recorded in metadata to avoid re-scanning
 - **L0 INDEX** is regenerated only if any package changed
 
-#### Typical workflow
-
-```bash
-# First run: full generation (~5 min for 200 components)
-kblens generate
-
-# ... make code changes ...
-
-# Subsequent run: only changed components regenerated (~seconds)
-kblens generate
-
-# Check what's in the knowledge base
-kblens status
-```
-
-#### How change detection works
-
-Each component's identity is a hash of `(relative_path, mtime, size)` for all code files. When you re-run `kblens generate`:
-
-1. **Scan** discovers all current components
-2. **Compare** each component's hash against `_meta.json`
-3. Components with matching hash → skip. Mismatched or missing → regenerate.
-4. Components in `_meta.json` but no longer on disk → delete their `.md` files
-5. Only packages containing dirty components get their L1 overview regenerated
-6. L0 INDEX regenerated only if any L1 changed
-
 ## Language Support
 
-Currently supports:
+### Code Languages
 
 - **C++** (`.h`, `.hpp`, `.cpp`, `.cc`, `.cxx`) — classes, structs, enums, free functions, templates, supplementary `.cpp` extraction
-- **C#** (`.cs`) — classes, structs, interfaces, records, enums, delegates, generics with constraints, attributes, XML doc comments, properties, events; only public/protected/internal members are kept
-- **Python** (`.py`, `.pyi`) — classes with public methods, module-level functions, type-annotated constants, decorators, docstrings, `__all__`; private names (`_prefixed`) are automatically skipped
-- **TypeScript** (`.ts`, `.tsx`) — classes, interfaces, type aliases, enums, exported functions, arrow functions, access modifiers; `private` members and `_prefixed` names are skipped
-- **JavaScript** (`.js`, `.jsx`, `.mjs`, `.cjs`) — classes, exported functions, constants; same extraction logic as TypeScript but without type annotations
+- **C#** (`.cs`) — classes, structs, interfaces, records, enums, delegates, generics with constraints, attributes, XML doc comments
+- **Python** (`.py`, `.pyi`) — classes with public methods, module-level functions, type-annotated constants, decorators, docstrings, `__all__`
+- **TypeScript** (`.ts`, `.tsx`) — classes, interfaces, type aliases, enums, exported functions, arrow functions, access modifiers
+- **JavaScript** (`.js`, `.jsx`, `.mjs`, `.cjs`) — classes, exported functions, constants
 
-The AST extraction, packing, and summarization pipeline is language-agnostic — only the tree-sitter parser and extraction logic is language-specific. Mixed-language projects (e.g., C++ engine with Python tooling) work out of the box.
+### Document Formats
 
-Components with fewer than 50 AST tokens are excluded from LLM summarization.
+See [Supported Formats](#supported-formats) above.
 
 ### Directory Layout
 
@@ -350,7 +493,7 @@ KBLens supports two layout styles:
 - **Deep layout** (C++ engine style): `source/package/component/src/*.h` — three directory levels
 - **Flat layout** (Python package style): `source/package/*.py` — package directory contains code files directly
 
-Both are auto-detected during scanning.
+Both are auto-detected during scanning. Document sources use the same layout detection.
 
 ### Roadmap
 
@@ -360,6 +503,7 @@ Planned languages:
 - [x] C#
 - [x] Python
 - [x] TypeScript / JavaScript
+- [x] Document knowledge base (PDF, DOCX, PPTX, HTML, etc.)
 - [ ] Java / Kotlin
 - [ ] Rust
 - [ ] Go
@@ -370,21 +514,16 @@ KBLens generates Markdown knowledge bases that can be queried by AI coding assis
 
 ### OpenCode Setup
 
-1. Copy the skill to your OpenCode config directory:
+```bash
+# Auto-install skill
+kblens skill install
 
-   ```bash
-   # Linux / macOS
-   mkdir -p ~/.config/opencode/skills/kblens-kb
-   cp skills/kblens-kb/SKILL.md ~/.config/opencode/skills/kblens-kb/
+# Or manually
+mkdir -p ~/.config/opencode/skills/kblens-kb
+cp skills/kblens-kb/SKILL.md ~/.config/opencode/skills/kblens-kb/
+```
 
-   # Windows
-   mkdir "%USERPROFILE%\.config\opencode\skills\kblens-kb"
-   copy skills\kblens-kb\SKILL.md "%USERPROFILE%\.config\opencode\skills\kblens-kb\"
-   ```
-
-2. The skill automatically reads your `~/.config/kblens/config.yaml` to find the knowledge base location.
-
-3. Ask your AI assistant questions about your codebase — it will search the knowledge base for answers.
+The skill automatically reads `KBLENS_KB_PATH` (set after each `kblens generate`) to find the knowledge base.
 
 ### Other AI Tools
 
@@ -397,8 +536,9 @@ The knowledge base is plain Markdown files. You can integrate it with any AI too
 ## Notes
 
 - The knowledge base uses **absolute paths** in `_meta.json` for change tracking. If you move your source code directory, regenerate the knowledge base with `kblens generate`.
-- **Hybrid output mode**: LLM only generates concise summaries (~400 tokens per batch). Raw AST signatures are appended directly from tree-sitter output, so they are never truncated or hallucinated. Higher-level prompts (package → INDEX) only receive summaries, not raw signatures, keeping aggregation costs low.
-- LLM model compatibility: KBLens uses [litellm](https://github.com/BerriAI/litellm) under the hood, so any model supported by litellm will work (OpenAI, Anthropic, local Ollama, etc.).
+- **Hybrid output mode**: LLM only generates concise summaries (~400 tokens per batch). Raw content (AST signatures or document text) is appended directly, so it is never truncated or hallucinated.
+- LLM model compatibility: KBLens uses [litellm](https://github.com/BerriAI/litellm) under the hood, so any model supported by litellm will work (OpenAI, Anthropic, local Ollama, llama.cpp, etc.).
+- For **local LLM** users: set `max_concurrent: 1` and increase `token_budget` (e.g., 20000) to minimize the number of serial LLM calls.
 
 ## License
 

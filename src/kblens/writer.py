@@ -74,9 +74,16 @@ def write_knowledge_base(
 
 
 def _append_ast_section(summary: str, ast_text: str, language: str = "cpp") -> str:
-    """Append raw AST signatures section to a leaf summary."""
+    """Append raw content section to a leaf summary.
+
+    For code (language != "markdown"), wraps in a fenced code block under
+    "Complete API Signatures".  For documents (language == "markdown"),
+    appends the original content directly under "Original Content".
+    """
     if not ast_text or not ast_text.strip():
         return summary
+    if language == "markdown":
+        return summary + "\n\n---\n\n## Original Content\n\n" + ast_text.strip()
     return (
         summary
         + f"\n\n---\n\n## Complete API Signatures\n\n```{language}\n"

@@ -113,6 +113,25 @@ LANGUAGE_MAP: dict[str, list[str]] = {
     "scala": [".scala"],
 }
 
+DOCUMENT_EXTENSIONS: set[str] = {
+    ".md",
+    ".rst",
+    ".txt",
+    ".html",
+    ".htm",
+    ".pdf",
+    ".docx",
+    ".doc",
+    ".pptx",
+    ".xlsx",
+    ".xls",
+    ".csv",
+    ".epub",
+    ".ipynb",
+    ".json",
+    ".xml",
+}
+
 # ---------------------------------------------------------------------------
 # Configuration models
 # ---------------------------------------------------------------------------
@@ -124,6 +143,9 @@ class SourceDir:
 
     path: str
     name: str
+    type: str = "code"  # "code" or "document"
+    section_level: int = 2  # for documents: split on H{n} headings
+    image_handling: str = "reference"  # "ignore" | "reference"
 
 
 @dataclass
@@ -137,6 +159,7 @@ class LLMConfig:
     temperature: float = 0.2
     max_concurrent: int = 8
     max_concurrent_components: int = 8
+    extra_body: dict[str, Any] | None = None  # extra params passed to litellm (e.g. thinking mode)
     # Resolved at runtime (not from YAML)
     _resolved_api_key: str = ""
 

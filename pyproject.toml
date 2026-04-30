@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "kblens"
 version = "0.4.0"
-description = "Progressive-disclosure code knowledge base generator for large codebases"
+description = "Progressive-disclosure code and document knowledge base generator for large codebases"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -39,6 +39,12 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "ruff>=0.4",
+]
+docs = [
+    "markitdown>=0.1.0",
+]
+docs-all = [
+    "markitdown[all]>=0.1.0",
 ]
 
 [project.urls]

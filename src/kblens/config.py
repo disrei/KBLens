@@ -69,7 +69,10 @@ def _parse_source_dirs(raw: list[dict] | None) -> list[SourceDir]:
             continue
         p = _expand_path(raw_path)
         n = item.get("name", "") or Path(p).name
-        result.append(SourceDir(path=p, name=n))
+        t = item.get("type", "code")
+        sl = item.get("section_level", 2)
+        ih = item.get("image_handling", "reference")
+        result.append(SourceDir(path=p, name=n, type=t, section_level=sl, image_handling=ih))
     return result
 
 
@@ -85,6 +88,7 @@ def _parse_llm(raw: dict | None) -> LLMConfig:
         temperature=raw.get("temperature", d.temperature),
         max_concurrent=raw.get("max_concurrent", d.max_concurrent),
         max_concurrent_components=raw.get("max_concurrent_components", d.max_concurrent_components),
+        extra_body=raw.get("extra_body"),
     )
 
 

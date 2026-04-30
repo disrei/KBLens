@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .models import (
     BINARY_EXTENSIONS,
+    DOCUMENT_EXTENSIONS,
     SUPPORTED_EXTENSIONS,
     Component,
     Config,
@@ -44,6 +45,7 @@ def resolve_include_extensions(config: Config) -> set[str]:
     """Resolve which file extensions to include.
 
     - ``"auto"``: walk source dirs and collect all SUPPORTED_EXTENSIONS found.
+      For document sources, DOCUMENT_EXTENSIONS are used instead.
     - explicit list: parse ``["*.h", "*.cpp"]`` → ``{".h", ".cpp"}``.
     """
     if config.include_extensions == "auto":
@@ -52,11 +54,13 @@ def resolve_include_extensions(config: Config) -> set[str]:
             src_path = Path(source.path)
             if not src_path.is_dir():
                 continue
+            # Choose the right extension set based on source type
+            valid_exts = DOCUMENT_EXTENSIONS if source.type == "document" else SUPPORTED_EXTENSIONS
             count = 0
             for f in src_path.rglob("*"):
                 if f.is_file():
                     ext = f.suffix.lower()
-                    if ext in SUPPORTED_EXTENSIONS:
+                    if ext in valid_exts:
                         detected.add(ext)
                     count += 1
                     # Stop early once we've sampled enough files and found at least one extension
