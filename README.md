@@ -383,7 +383,7 @@ summary_language: "en"                # Language for generated summaries
 | Variable | Purpose |
 |----------|---------|
 | `KBLENS_LLM_KEY` | LLM API key (overrides config) |
-| `KBLENS_KB_PATH` | Set automatically after generation; used by AI skills to locate the KB |
+| `KBLENS_KB_PATH` | Set automatically after generation; used by AI skills and `kblens serve` to locate the KB. Supports multiple paths separated by `;` (Windows) or `:` (Unix). |
 
 ## CLI Reference
 

@@ -1646,6 +1646,8 @@ def serve(
 ) -> None:
     """Browse the knowledge base in your browser.
 
+    KBLENS_KB_PATH supports multiple paths separated by ; (Windows) or : (Unix).
+
     Examples:
         kblens serve --kb ./output_code --kb ./output_docs
         kblens serve --config kblens.yaml
@@ -1672,9 +1674,14 @@ def serve(
                 raise typer.Exit(1)
         else:
             env_path = os.environ.get("KBLENS_KB_PATH", "")
-            if env_path and Path(env_path).is_dir():
-                output_dirs.append(Path(env_path).resolve())
-            else:
+            if env_path:
+                # Support multiple paths separated by ; (Windows) or : (Unix)
+                sep = ";" if os.name == "nt" else ":"
+                for p in env_path.split(sep):
+                    p = p.strip()
+                    if p and Path(p).is_dir():
+                        output_dirs.append(Path(p).resolve())
+            if not output_dirs:
                 try:
                     config = load_config(None)
                     output_dirs.append(Path(config.output_dir).expanduser().resolve())
