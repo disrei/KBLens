@@ -247,6 +247,47 @@ Connections to other documents.
 
 The LLM summary enables navigation and topic matching, while the original content below the `---` separator allows precise retrieval and direct quoting.
 
+### Confluence Preprocessing Tool
+
+Confluence is supported as a **preprocessing workflow**, not as a native `source.type` inside KBLens.
+
+Use the bundled `confluence_crawler.py` script to:
+
+1. Authenticate to Confluence via REST API
+2. Recursively fetch a page and its child pages
+3. Convert Confluence HTML storage content to Markdown
+4. Save the result as a local `.md` tree
+5. Point `kblens generate` at that output directory as a normal document source
+
+This separation is intentional:
+
+- **KBLens core** focuses on local file inputs (`.md`, `.pdf`, `.docx`, etc.)
+- **Confluence crawling** is a remote-fetch/auth problem, not just a document conversion problem
+- **markitdown** can help with HTML -> Markdown after fetching, but it does not replace the Confluence API step
+
+Example usage:
+
+```bash
+python confluence_crawler.py "https://confluence.example.com/display/SPACE/Page+Title" \
+  --depth 3 \
+  --output ./confluence_docs
+```
+
+Then use the crawled output as a regular document source:
+
+```yaml
+sources:
+  - path: "./confluence_docs"
+    name: "confluence-docs"
+    type: "document"
+```
+
+Notes:
+
+- The crawler is currently a standalone utility script in the repo root
+- It is not wired into the `kblens` CLI yet
+- It is not included as a formal source type like `code` or `document`
+
 ## Using with Local LLMs
 
 KBLens works well with locally deployed LLMs for privacy-sensitive or cost-free usage.
