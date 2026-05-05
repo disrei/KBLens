@@ -42,6 +42,7 @@ This gives AI assistants a reliable, searchable reference — like an always-up-
 - **Change detection** — Five-way classification (unchanged / changed / new / deleted / failed) with automatic cleanup of orphaned files and cascade updates to affected packages.
 - **Multi-source projects** — One config file can define multiple source directories with different types (code or document). Each source gets its own independent knowledge base.
 - **Concurrent generation** — Processes 8 components in parallel with 8 concurrent LLM calls. Includes exponential backoff retry (3 attempts) for transient failures.
+- **Browser viewer** — Built-in `kblens serve` command starts a local HTTP server to browse the knowledge base in your browser with syntax-highlighted code, Markdown rendering, and a tree navigation sidebar. Supports viewing multiple knowledge bases (code + docs) simultaneously.
 - **Resume from interruption** — Progress is persisted after each component. Ctrl+C and re-run to continue where you left off.
 - **Live dashboard** — Rich terminal UI showing real-time progress, active components, token usage, and error count.
 
@@ -147,9 +148,31 @@ For a project with ~200 components, expect ~5 minutes and ~400K input tokens.
 
 The generated knowledge base is a directory of Markdown files. You can:
 
+- **Browse in browser** — Run `kblens serve` to open a local viewer with syntax highlighting, tree navigation, and Markdown rendering
 - **Browse directly** — Open `INDEX.md` and navigate through the hierarchy
 - **Search with grep** — Find any class, function, or concept across all summaries
 - **Integrate with AI tools** — Point your coding assistant's skill/tool at the knowledge base directory (see [AI Assistant Integration](#ai-assistant-integration) below)
+
+#### Browser Viewer
+
+```bash
+# Auto-detect from KBLENS_KB_PATH environment variable
+kblens serve
+
+# Browse a specific output directory
+kblens serve --kb ~/kblens_kb/my_project
+
+# Browse multiple knowledge bases (code + docs) together
+kblens serve --kb ~/kblens_kb/code_output --kb ~/kblens_kb/doc_output
+
+# Use a specific config file to locate the output directory
+kblens serve --config kblens.yaml
+```
+
+The viewer starts a local HTTP server (default port 9753) with:
+- **Left sidebar** — Collapsible tree showing all sources, packages, and components
+- **Right content** — Markdown rendered with GitHub-dark styling and syntax-highlighted code blocks
+- **Multi-source** — Multiple `--kb` directories are merged; all sources appear in the sidebar
 
 ## Document Knowledge Base
 
@@ -369,6 +392,10 @@ kblens generate                    # Generate all sources
 kblens generate --source core      # Generate only the "core" source
 kblens generate --dry-run          # Preview without LLM calls
 kblens generate --config ./my.yaml # Use specific config file
+kblens serve                       # Browse KB in browser (auto-detect from env)
+kblens serve --kb ./output         # Browse a specific KB directory
+kblens serve --kb ./code --kb ./docs  # Browse multiple KBs together
+kblens serve --port 8080           # Use a custom port
 kblens status                      # Show knowledge base status
 kblens monitor                     # Monitor a running generation
 kblens init                        # Interactive config setup

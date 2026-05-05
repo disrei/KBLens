@@ -524,6 +524,10 @@ def generate(
     # without reading config files.  Skip for dry-run (nothing was written).
     if not dry_run:
         _set_kb_env_var(config.output_dir)
+        resolved_out = str(Path(config.output_dir).resolve())
+        console.print(
+            f"Browse in browser: [cyan]kblens serve --kb {resolved_out}[/cyan]"
+        )
 
 
 def _generate_one_source(config: Config, dry_run: bool) -> None:
@@ -1625,6 +1629,88 @@ def init(
     console.print(f"  2. Run [cyan]kblens generate[/cyan] to build the knowledge base")
     console.print(f"  3. Run [cyan]kblens generate --dry-run[/cyan] to preview first")
     _print_skill_setup_guidance()
+
+
+@app.command()
+def serve(
+    kb: list[str] = typer.Option(
+        [], "--kb", help="Knowledge base output directory (repeatable). "
+        "If omitted, uses KBLENS_KB_PATH env var or config output_dir."
+    ),
+    config_path: str = typer.Option(
+        None, "--config", "-c", help="Config file to read output_dir from"
+    ),
+    port: int = typer.Option(9753, "--port", "-p", help="HTTP port"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind address"),
+    title: str = typer.Option(None, "--title", "-t", help="Project title in header"),
+) -> None:
+    """Browse the knowledge base in your browser.
+
+    Examples:
+        kblens serve --kb ./output_code --kb ./output_docs
+        kblens serve --config kblens.yaml
+        kblens serve   # auto-detect from KBLENS_KB_PATH
+    """
+    output_dirs: list[Path] = []
+    project_name = title or "KBLens"
+
+    if kb:
+        for p in kb:
+            d = Path(p).expanduser().resolve()
+            if not d.exists():
+                console.print(f"[red]Directory not found:[/red] {d}")
+                raise typer.Exit(1)
+            output_dirs.append(d)
+    else:
+        if config_path:
+            try:
+                config = load_config(config_path)
+                output_dirs.append(Path(config.output_dir).expanduser().resolve())
+                project_name = title or config.project or project_name
+            except Exception as e:
+                console.print(f"[red]Error loading config:[/red] {e}")
+                raise typer.Exit(1)
+        else:
+            env_path = os.environ.get("KBLENS_KB_PATH", "")
+            if env_path and Path(env_path).is_dir():
+                output_dirs.append(Path(env_path).resolve())
+            else:
+                try:
+                    config = load_config(None)
+                    output_dirs.append(Path(config.output_dir).expanduser().resolve())
+                    project_name = title or config.project or project_name
+                except Exception:
+                    console.print("[red]No knowledge base found.[/red]")
+                    console.print(
+                        "Specify with [cyan]--kb PATH[/cyan], "
+                        "[cyan]--config FILE[/cyan], "
+                        "or set [cyan]KBLENS_KB_PATH[/cyan] env var."
+                    )
+                    raise typer.Exit(1)
+
+    if not output_dirs:
+        console.print("[red]No output directories resolved.[/red]")
+        raise typer.Exit(1)
+
+    from .server import serve as start_server
+
+    try:
+        start_server(
+            output_dirs=output_dirs,
+            project_name=project_name,
+            host=host,
+            port=port,
+        )
+    except FileNotFoundError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+    except OSError as e:
+        if "address already in use" in str(e).lower() or "10048" in str(e):
+            console.print(f"[red]Port {port} is already in use.[/red]")
+            console.print(f"Try: [cyan]kblens serve --port {port + 1}[/cyan]")
+        else:
+            console.print(f"[red]Server error:[/red] {e}")
+        raise typer.Exit(1)
 
 
 @app.command()
