@@ -58,17 +58,21 @@ def parse_confluence_url(url: str) -> tuple[str, str, str]:
 class ConfluenceClient:
     """Simple Confluence REST API client."""
 
-    def __init__(self, base_url: str, username: str, password: str):
+    def __init__(self, base_url: str, token: str | None = None,
+                 username: str | None = None, password: str | None = None):
         self.base_url = base_url.rstrip("/")
         self.session = requests.Session()
-        self.session.auth = (username, password)
         self.session.headers["Accept"] = "application/json"
+        if token:
+            self.session.headers["Authorization"] = f"Bearer {token}"
+        elif username and password:
+            self.session.auth = (username, password)
 
     def _get(self, endpoint: str, params: dict | None = None) -> dict:
         url = f"{self.base_url}/rest/api{endpoint}"
         resp = self.session.get(url, params=params, timeout=30)
         if resp.status_code == 401:
-            print("[ERROR] Authentication failed. Check username/password.")
+            print("[ERROR] Authentication failed. Check token/credentials.")
             sys.exit(1)
         resp.raise_for_status()
         return resp.json()
@@ -269,6 +273,8 @@ def main():
                         help="Output directory (default: ./confluence_docs)")
     parser.add_argument("-d", "--depth", type=int, default=10,
                         help="Maximum recursion depth (default: 10)")
+    parser.add_argument("--token", default=None,
+                        help="Confluence Personal Access Token (recommended)")
     parser.add_argument("-u", "--username", default=None,
                         help="Confluence username (prompts if not given)")
     parser.add_argument("-p", "--password", default=None,
@@ -283,12 +289,16 @@ def main():
     print()
 
     # Get credentials
-    username = args.username or input("Username: ")
-    password = args.password or getpass.getpass("Password: ")
+    token = args.token
+    if not token:
+        username = args.username or input("Username: ")
+        password = args.password or getpass.getpass("Password: ")
+    else:
+        username = password = None
     print()
 
     # Connect
-    client = ConfluenceClient(base_url, username, password)
+    client = ConfluenceClient(base_url, token=token, username=username, password=password)
 
     # Find the starting page
     if space_key:

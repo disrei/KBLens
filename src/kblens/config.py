@@ -59,6 +59,21 @@ def _expand_path(p: str) -> str:
     return str(Path(os.path.expandvars(os.path.expanduser(p))).resolve())
 
 
+def _parse_extensions(raw: list[str] | None) -> list[str]:
+    """Normalize extension config values to dotted lowercase strings."""
+    if not raw:
+        return []
+    result: list[str] = []
+    for item in raw:
+        ext = str(item).strip().lstrip("*")
+        if not ext:
+            continue
+        if not ext.startswith("."):
+            ext = f".{ext}"
+        result.append(ext.lower())
+    return result
+
+
 def _parse_source_dirs(raw: list[dict] | None) -> list[SourceDir]:
     if not raw:
         return []
@@ -200,6 +215,7 @@ def load_config(config_path: str | Path | None = None) -> Config:
         output_dir=_expand_path(merged.get("output_dir", d.output_dir)),
         source_dirs=_parse_source_dirs(raw_sources),
         include_extensions=merged.get("include_extensions", d.include_extensions),
+        ignore_extensions=_parse_extensions(merged.get("ignore_extensions")),
         exclude_patterns=merged.get("exclude_patterns", d.exclude_patterns),
         llm=llm_cfg,
         packing=_parse_packing(merged.get("packing")),
@@ -243,6 +259,11 @@ source_dirs:
 
 # "auto" = detect from source; or explicit: ["*.h", "*.cpp"]
 include_extensions: "auto"
+
+# Optional: force KBLens to ignore certain file types during scan, hash,
+# extraction, and incremental change detection.
+# Example: [".cs"] to keep legacy C++-only behavior.
+ignore_extensions: []
 
 exclude_patterns:
   - "*/test/*"

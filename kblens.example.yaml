@@ -18,6 +18,10 @@ sources:
 # "auto" = detect from source; or explicit: ["*.h", "*.cpp"]
 include_extensions: "auto"
 
+# Optional: ignore file types during scan, hash, and extraction.
+# Example: [".cs"] to keep legacy C++-only behavior for mixed repos.
+ignore_extensions: []
+
 exclude_patterns:
   - "*/test/*"
   - "*/tests/*"

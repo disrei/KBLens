@@ -20,6 +20,21 @@ logger = logging.getLogger("kblens.scanner")
 AUTO_DETECT_SAMPLE_LIMIT = 2000
 DEFAULT_FALLBACK_EXTENSIONS = {".h", ".hpp", ".cpp", ".cc"}
 
+
+def _apply_ignored_extensions(exts: set[str], ignored: list[str]) -> set[str]:
+    """Remove config-ignored extensions from a resolved extension set."""
+    if not ignored:
+        return exts
+    normalized_ignored = set()
+    for ext in ignored:
+        value = str(ext).strip().lstrip("*").lower()
+        if not value:
+            continue
+        if not value.startswith("."):
+            value = f".{value}"
+        normalized_ignored.add(value)
+    return {ext for ext in exts if ext not in normalized_ignored}
+
 # Directories that should never be treated as packages or components
 _SKIP_DIRS = frozenset(
     {
@@ -66,7 +81,8 @@ def resolve_include_extensions(config: Config) -> set[str]:
                     # Stop early once we've sampled enough files and found at least one extension
                     if count >= AUTO_DETECT_SAMPLE_LIMIT and detected:
                         break
-        return detected if detected else DEFAULT_FALLBACK_EXTENSIONS
+        resolved = detected if detected else DEFAULT_FALLBACK_EXTENSIONS
+        return _apply_ignored_extensions(resolved, config.ignore_extensions)
     else:
         # Manual list: ["*.h", "*.cpp", ".h", "h"] → {".h", ".cpp"}
         result: set[str] = set()
@@ -74,8 +90,8 @@ def resolve_include_extensions(config: Config) -> set[str]:
             ext = e.lstrip("*")
             if not ext.startswith("."):
                 ext = f".{ext}"
-            result.add(ext)
-        return result
+            result.add(ext.lower())
+        return _apply_ignored_extensions(result, config.ignore_extensions)
 
 
 def _matches_exclude(rel_path: str, exclude_patterns: list[str]) -> bool:

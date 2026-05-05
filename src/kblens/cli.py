@@ -569,6 +569,7 @@ def generate(
             output_dir=str(Path(config.output_dir) / src_dir.name),
             source_dirs=[src_dir],
             include_extensions=config.include_extensions,
+            ignore_extensions=config.ignore_extensions,
             exclude_patterns=config.exclude_patterns,
             llm=config.llm,
             packing=config.packing,

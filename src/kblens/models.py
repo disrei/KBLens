@@ -183,6 +183,7 @@ class Config:
     output_dir: str = "./kblens_kb"
     source_dirs: list[SourceDir] = field(default_factory=list)
     include_extensions: str | list[str] = "auto"
+    ignore_extensions: list[str] = field(default_factory=list)
     exclude_patterns: list[str] = field(
         default_factory=lambda: [
             "*/test/*",
