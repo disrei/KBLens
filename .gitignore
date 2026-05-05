@@ -27,6 +27,10 @@ kblens.local.yaml
 kblens_kb/
 .kblens_cache/
 tmp_csharp_test/
+tmp/
+confluence_docs/
+test_doc_kb.yaml
+.playwright-cli/
 
 # OS
 .DS_Store

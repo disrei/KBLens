@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 from typing import Any
 
 import litellm
@@ -34,14 +35,14 @@ _prefix_inference_warned: set[tuple[str, str | None]] = set()
 
 # Leaf: dynamically computed — see _compute_leaf_max_tokens()
 # Since LLM now only writes summaries (not signatures), output is much smaller.
-LEAF_MAX_TOKENS_FLOOR = 400
-LEAF_MAX_TOKENS_CEILING = 1500
-LEAF_OUTPUT_RATIO = 0.15  # LLM only writes summaries, not signatures
+LEAF_MAX_TOKENS_FLOOR = 120
+LEAF_MAX_TOKENS_CEILING = 700
+LEAF_OUTPUT_RATIO = 0.10  # LLM only writes summaries, not signatures
 
-FRAGMENT_AGG_MAX_TOKENS = 800
-COMPONENT_MAX_TOKENS = 1500
-PACKAGE_MAX_TOKENS = 1500
-INDEX_MAX_TOKENS = 2000
+FRAGMENT_AGG_MAX_TOKENS = 500
+COMPONENT_MAX_TOKENS = 900
+PACKAGE_MAX_TOKENS = 900
+INDEX_MAX_TOKENS = 1200
 
 
 def _compute_leaf_max_tokens(batch_input_tokens: int) -> int:
@@ -51,7 +52,7 @@ def _compute_leaf_max_tokens(batch_input_tokens: int) -> int:
     Dependencies) and raw AST signatures are appended directly by the writer,
     the output budget can be much smaller.
     """
-    computed = int(batch_input_tokens * LEAF_OUTPUT_RATIO) + 200
+    computed = int(batch_input_tokens * LEAF_OUTPUT_RATIO) + 80
     return max(LEAF_MAX_TOKENS_FLOOR, min(computed, LEAF_MAX_TOKENS_CEILING))
 
 
@@ -72,6 +73,7 @@ Directories: {dir_tree}
 
 Summarize this code in {summary_language}, using Markdown. Be concise.
 The raw API signatures will be appended separately — do NOT list individual function signatures.
+Prefer omission over guessing. If evidence is insufficient, say so explicitly.
 
 Use these exact headings:
 
@@ -79,16 +81,19 @@ Use these exact headings:
 (1-2 sentences: what this code does and why it exists)
 
 ## Key Types and Relationships
-(classes, structs, enums and how they relate to each other — focus on inheritance, composition, and collaboration patterns)
+(classes, structs, enums and relationships that are explicit in the AST above; if none are explicit, write "Not enough information in AST excerpt.")
 
 ## Source Files
-(list the source file paths from the `// --- path ---` markers above, grouped by role)
+(list only the source file paths from the `// --- path ---` markers above; do not infer roles that are not explicit)
 
 ## Dependencies
 (only list #include paths or types from other components visible above)
 
 RULES:
 - Be factual. Only describe what is visible in the AST above. Do NOT invent files, classes, or dependencies.
+- Do NOT infer product domains, architecture layers, ownership, or runtime behavior from names alone.
+- Do NOT use speculative language such as "likely", "probably", "appears to", "suggests", or "acts as".
+- If a section lacks evidence, write "Not enough information in AST excerpt.".
 - If no #include is visible, write "No explicit dependencies visible in AST excerpt."
 - Do NOT list individual function signatures — they are preserved separately from the raw AST."""
 
@@ -104,6 +109,7 @@ Documents: {dir_tree}
 
 Summarize this documentation in {summary_language}, using Markdown. Be concise.
 The original document content will be appended separately — focus on the summary.
+Prefer omission over guessing. If evidence is insufficient, say so explicitly.
 
 Use these exact headings:
 
@@ -121,6 +127,9 @@ Use these exact headings:
 
 RULES:
 - Be factual. Only describe what is visible in the document above.
+- Do NOT infer unstated system architecture, business domains, or component responsibilities from titles alone.
+- Do NOT use speculative language such as "likely", "probably", "appears to", or "suggests".
+- If a section lacks evidence, write "Not enough information in document excerpt.".
 - If the document contains images, note their alt text or filenames as visual references.
 - Do NOT reproduce the full document text — it is preserved separately."""
 
@@ -130,23 +139,44 @@ Component: {component_name} ({file_count} files)
 Document section details:
 {submodule_text}
 
-Write a component overview ({summary_language}, max 400 words, Markdown):
-1. Purpose (1-2 sentences: what topics this document collection covers)
-2. Structure (how the documents and sections are organized)
-3. Key topics and concepts (list the main subjects covered)
-4. Cross-references (connections between documents mentioned in the section details)
+Write a component overview ({summary_language}, max 220 words, Markdown) using these exact headings:
 
-Only use information from the section details above. Do NOT invent content."""
+## Purpose
+(1-2 sentences, only if explicit in the section details)
+
+## Structure
+(describe only the document/section organization explicitly shown above)
+
+## Key Topics
+(bullet list of topics explicitly named above)
+
+## Cross-References
+(only explicit references between documents/sections; otherwise write "No explicit cross-references stated.")
+
+RULES:
+- Only use information from the section details above.
+- Do NOT invent content or fill gaps from filenames alone.
+- Do NOT use speculative language.
+- If a section lacks evidence, write "Not enough information in section details."."""
 
 FRAGMENT_AGG_PROMPT = """\
 Partial summaries of `{parent}`:
 
 {fragments}
 
-Merge into one summary ({summary_language}, max 250 words, Markdown):
-1. Responsibilities  2. Collaboration  3. Key interfaces
+Merge into one summary ({summary_language}, max 160 words, Markdown) using these exact headings:
 
-Only use information from the fragments above."""
+## Responsibility
+
+## Explicit Relationships
+
+## Key API Names
+
+RULES:
+- Only use information repeated or directly stated in the fragments above.
+- Do NOT infer new architecture, domains, workflows, or dependencies.
+- Do NOT use speculative language.
+- If relationships are not explicit, write "No explicit relationships stated in fragments."."""
 
 COMPONENT_PROMPT = """\
 Component: {component_name} ({file_count} files, {total_lines} lines)
@@ -154,38 +184,71 @@ Component: {component_name} ({file_count} files, {total_lines} lines)
 Submodule details:
 {submodule_text}
 
-Write a component overview ({summary_language}, max 400 words, Markdown):
-1. Purpose (1-2 sentences)
-2. Architecture (how submodules relate)
-3. Key public API summary (list important class/interface NAMES only — full signatures are preserved in leaf files)
-4. Dependencies (only those explicitly mentioned in the submodule details)
+Write a component overview ({summary_language}, max 220 words, Markdown) using these exact headings:
 
-Only use information from the submodule details above. Do NOT invent content.
-Do NOT speculate about possible interactions — only state relationships that are explicitly documented above."""
+## Purpose
+
+## Explicit Structure
+
+## Key API Names
+
+## Dependencies
+
+RULES:
+- Only use information from the submodule details above.
+- Do NOT invent content.
+- Do NOT speculate about interactions, domain intent, or hidden architecture.
+- Do NOT use speculative language.
+- List API names only if they are explicitly named above.
+- If structure or dependencies are not explicit, write "Not enough information in submodule details."."""
 
 PACKAGE_PROMPT = """\
 Package: {package_name}
 
 {component_sections}
 
-Write a package overview ({summary_language}, max 500 words, Markdown):
-1. Package purpose
-2. Components grouped by domain
-3. Known cross-component dependencies (only from explicit references in the component summaries — do NOT speculate about possible interactions)
-4. Navigation guide: "For X, see Y"
+Write a package overview ({summary_language}, max 260 words, Markdown) using these exact headings:
 
-Only use information from the component summaries above. Be factual and avoid speculative language like "likely", "probably", "could", or "may"."""
+## Package Purpose
+
+## Components
+(bullet list: `- <component>: <one factual sentence>`)
+
+## Explicit Cross-Component Dependencies
+(only dependencies explicitly stated in component summaries; otherwise write "No explicit cross-component dependencies stated.")
+
+## Navigation Guide
+(bullet list: `- For <task>, see <component>` only when supported by the component summaries)
+
+RULES:
+- Only use information from the component summaries above.
+- Do NOT group by inferred domain.
+- Do NOT infer business area, subsystem intent, or architecture from package/component names alone.
+- Do NOT introduce examples or entities that are not present in the summaries.
+- Do NOT use speculative language."""
 
 INDEX_PROMPT = """\
 {package_sections}
 
-Write a knowledge base index ({summary_language}, Markdown):
-1. Project overview (2-3 sentences)
-2. Package table with descriptions (use `[package_name](packages/package_name.md)` links)
-3. High-level architecture
-4. How to navigate this knowledge base
+Write a knowledge base index ({summary_language}, Markdown) using these exact headings:
 
-Only use information from the package summaries above."""
+## Project Overview
+(2-3 short sentences based only on repeated themes across package summaries)
+
+## Packages
+(Markdown table: `| Package | Description |` using links of the form `[source/package](source/package.md)`)
+
+## Explicit Shared Patterns
+(bullet list of patterns only if multiple package summaries explicitly mention them; otherwise write "No explicit shared patterns stated across package summaries.")
+
+## How to Navigate This Knowledge Base
+(bullet list with factual navigation tips derived from package summaries)
+
+RULES:
+- Only use information from the package summaries above.
+- Do NOT infer a project-wide architecture from package names alone.
+- Do NOT invent sample entities, domains, workflows, or dependency directions.
+- Do NOT use speculative language."""
 
 
 # ---------------------------------------------------------------------------
@@ -397,6 +460,88 @@ def _build_batch_content(
     return "\n".join(ast_lines), dir_tree
 
 
+def extract_marked_source_paths(ast_content: str, separator_format: str = "code") -> list[str]:
+    """Extract source paths from batch content separators."""
+    paths: list[str] = []
+    for raw_line in ast_content.splitlines():
+        line = raw_line.strip()
+        if separator_format == "doc":
+            prefix = "### From: "
+            if line.startswith(prefix):
+                paths.append(line[len(prefix) :].strip())
+        else:
+            if line.startswith("// --- ") and line.endswith(" ---"):
+                paths.append(line[7:-4].strip())
+    # Keep order stable while deduplicating.
+    return list(dict.fromkeys(p for p in paths if p))
+
+
+def summary_has_required_headings(text: str, is_doc: bool = False) -> bool:
+    """Check whether a summary includes all required top-level headings."""
+    required = (
+        [
+            "## Topic Summary",
+            "## Key Concepts and Definitions",
+            "## Actionable Information",
+            "## Related Topics",
+        ]
+        if is_doc
+        else [
+            "## Responsibility",
+            "## Key Types and Relationships",
+            "## Source Files",
+            "## Dependencies",
+        ]
+    )
+    return all(h in text for h in required)
+
+
+def summary_looks_truncated(text: str, is_doc: bool = False) -> bool:
+    """Heuristic detection for visibly incomplete model output."""
+    stripped = text.rstrip()
+    if not stripped:
+        return True
+    if not summary_has_required_headings(stripped, is_doc=is_doc):
+        return True
+    last_line = stripped.splitlines()[-1].rstrip()
+    if not last_line:
+        return False
+    if last_line.endswith(("`", "(", "[", ":", "-")):
+        return True
+    if stripped.count("`") % 2 == 1:
+        return True
+    return False
+
+
+def build_leaf_fallback_summary(ast_content: str, is_doc: bool = False) -> str:
+    """Create a deterministic fallback summary when model output is incomplete."""
+    paths = extract_marked_source_paths(ast_content, "doc" if is_doc else "code")
+    if is_doc:
+        path_lines = "\n".join(f"- {p}" for p in paths[:12]) or "- No extracted document sections listed."
+        return (
+            "## Topic Summary\n"
+            "Not enough information in document excerpt to provide a reliable prose summary.\n\n"
+            "## Key Concepts and Definitions\n"
+            "Not enough information in document excerpt.\n\n"
+            "## Actionable Information\n"
+            f"{path_lines}\n\n"
+            "## Related Topics\n"
+            "Not enough information in document excerpt."
+        )
+
+    path_lines = "\n".join(f"- {p}" for p in paths[:12]) or "- No extractable source files listed."
+    return (
+        "## Responsibility\n"
+        "Not enough information in AST excerpt to provide a reliable prose summary.\n\n"
+        "## Key Types and Relationships\n"
+        "Not enough information in AST excerpt.\n\n"
+        "## Source Files\n"
+        f"{path_lines}\n\n"
+        "## Dependencies\n"
+        "No explicit dependencies visible in AST excerpt."
+    )
+
+
 async def phase4_generate(
     component: Component,
     pack_result: PackResult,
@@ -523,10 +668,9 @@ async def phase5c_package(
         component_sections=component_sections,
         summary_language=config.summary_language,
     )
-    # Scale output budget with number of components:
-    # ~30 tokens per component row + 300 tokens fixed overhead
+    # Keep package summaries short for smaller local models.
     n_components = len(component_overviews)
-    max_out = max(PACKAGE_MAX_TOKENS, min(n_components * 30 + 300, 3000))
+    max_out = max(PACKAGE_MAX_TOKENS, min(n_components * 18 + 180, 1600))
     return await _llm_call(prompt, config, max_tokens=max_out)
 
 
@@ -550,3 +694,38 @@ async def phase5d_index(
         summary_language=config.summary_language,
     )
     return await _llm_call(prompt, config, max_tokens=INDEX_MAX_TOKENS)
+
+
+def normalize_index_links(index_md: str, package_overviews: dict[str, tuple[str, str]]) -> str:
+    """Rewrite package links in INDEX.md to match actual on-disk layout.
+
+    The writer stores package overviews at ``<output_dir>/<source>/<package>.md``.
+    Models may still emit stale or inferred link targets. This function preserves
+    link labels while normalizing targets deterministically from package keys.
+
+    Tries the full ``source/package`` key first, then falls back to matching
+    just the package name as label, so both ``[community/data]`` and ``[data]``
+    are covered without hard-coding any particular naming convention.
+    """
+
+    text = index_md
+    for pkg_key in sorted(package_overviews, key=len, reverse=True):
+        parts = pkg_key.split("/", 1)
+        if len(parts) != 2:
+            continue
+        source_name, pkg_name = parts
+        target = f"{source_name}/{pkg_name}.md"
+        replacement = f"[{pkg_key}]({target})"
+        pattern = rf"\[{re.escape(pkg_key)}\]\([^)]*\)"
+        text = re.sub(pattern, replacement, text)
+
+    for pkg_key in sorted(package_overviews, key=len, reverse=True):
+        parts = pkg_key.split("/", 1)
+        if len(parts) != 2:
+            continue
+        source_name, pkg_name = parts
+        target = f"{source_name}/{pkg_name}.md"
+        pattern = rf"\[{re.escape(pkg_name)}\]\([^)]*\)"
+        replacement = f"[{pkg_name}]({target})"
+        text = re.sub(pattern, replacement, text)
+    return text

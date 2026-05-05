@@ -123,6 +123,9 @@ def write_component_incremental(config: Config, cr: ComponentResult) -> None:
     if cr.batch_count <= 1 and comp.file_count < threshold:
         # Small component -> single .md
         content = cr.overview
+        if cr.skipped_reason and not cr.submodule_summaries and not cr.submodule_ast:
+            _write_file(pkg_comp_dir / f"{comp_name_safe}.md", content)
+            return
         # Only append submodule summaries if Phase 5b was NOT skipped
         # (when Phase 5b is skipped, overview already contains the leaf content)
         if cr.submodule_summaries and len(cr.submodule_summaries) > 1:
@@ -396,6 +399,21 @@ def build_component_meta(
         else False
     )
     status = "partial" if has_empty else "done"
+    if cr.skipped_reason:
+        return {
+            "path": str(comp.path),
+            "status": "skipped",
+            "reason": cr.skipped_reason,
+            "file_count": comp.file_count,
+            "total_lines": comp.total_lines,
+            "batch_count": 0,
+            "tokens": {
+                "input": cr.total_input_tokens,
+                "output": cr.total_output_tokens,
+            },
+            "last_updated": datetime.now(timezone.utc).isoformat(),
+            "source_hash": compute_source_hash(comp.path, include_exts, exclude_patterns),
+        }
     if has_empty:
         logger.warning("Component %s has empty submodule summaries, marking as partial", comp.key)
     return {

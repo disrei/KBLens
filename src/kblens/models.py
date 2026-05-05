@@ -295,6 +295,7 @@ class ComponentResult:
     batch_count: int = 0
     total_input_tokens: int = 0
     total_output_tokens: int = 0
+    skipped_reason: str = ""
 
 
 @dataclass

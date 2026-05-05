@@ -71,10 +71,13 @@ from .summarizer import (
     _build_batch_content,
     _compute_leaf_max_tokens,
     _llm_call,
+    build_leaf_fallback_summary,
+    normalize_index_links,
     phase5a_aggregate,
     phase5b_component,
     phase5c_package,
     phase5d_index,
+    summary_looks_truncated,
 )
 from .writer import (
     build_component_meta,
@@ -858,22 +861,17 @@ async def _process_one_component(
         # ---- Skip components with no extractable AST (e.g. C#-only, config-only) ----
         total_ast_tokens = sum(e.tokens for e in ast_map.values())
         if total_ast_tokens < MIN_AST_TOKENS_FOR_LLM:
-            # Record skipped status so next run doesn't treat it as "new"
-            from datetime import datetime, timezone
-
+            cr = ComponentResult(
+                component=comp,
+                overview=f"# {comp.name}\n\n*Skipped: ast_tokens_below_threshold ({comp.file_count} files).*",
+                batch_count=0,
+                skipped_reason="ast_tokens_below_threshold",
+            )
+            write_component_incremental(config, cr)
             save_meta_component(
                 config.output_dir,
                 comp.key,
-                {
-                    "path": str(comp.path),
-                    "status": "skipped",
-                    "reason": "ast_tokens_below_threshold",
-                    "ast_tokens": total_ast_tokens,
-                    "source_hash": compute_source_hash(
-                        comp.path, include_exts, config.exclude_patterns
-                    ),
-                    "last_updated": datetime.now(timezone.utc).isoformat(),
-                },
+                build_component_meta(cr, include_exts, config.exclude_patterns),
                 config.llm.model,
             )
             async with ds._lock:
@@ -883,7 +881,7 @@ async def _process_one_component(
                 ds.add_event(f"SKIP {comp.key} (no extractable AST)")
             progress.update(comp_task, completed=ds.done_components)
             _refresh_live(live_ref, ds, progress)
-            return None
+            return cr
 
         # ---- Phase 4: leaf summaries (batches concurrent via llm_semaphore) ----
         detected_langs = {e.language for e in ast_map.values() if e.language}
@@ -924,6 +922,8 @@ async def _process_one_component(
                 text, in_tok, out_tok = await _llm_call(
                     prompt, config, max_tokens=max_out, system=system_msg,
                 )
+                if summary_looks_truncated(text, is_doc=is_doc):
+                    text = build_leaf_fallback_summary(ast_content, is_doc=is_doc)
                 return BatchSummary(
                     batch=batch,
                     summary=text,
@@ -1230,22 +1230,44 @@ async def _run_summarization_live(
                                 )
                             elif status == "skipped":
                                 reason = meta_entry.get("reason", "insufficient AST content")
+                                path_text = meta_entry.get("path", "")
+                                file_count_text = meta_entry.get("file_count", comp.file_count)
+                                detail = (
+                                    f"No extractable AST summary was generated for this component"
+                                    + (f" (source: `{path_text}`)" if path_text else "")
+                                )
                                 comp_overviews[comp.name] = (
-                                    f"*Skipped: {reason} ({comp.file_count} files)*",
+                                    f"## Purpose\n{detail}.\n\n"
+                                    f"## Explicit Structure\nNot enough information in submodule details.\n\n"
+                                    f"## Key API Names\nNot enough information in submodule details.\n\n"
+                                    f"## Dependencies\nSkipped reason: {reason}.",
                                     comp.file_count,
                                 )
 
-                try:
-                    pkg_overview, in_t, out_t = await phase5c_package(
-                        pkg_name, comp_overviews, config
+                if not comp_overviews:
+                    pkg_overview = (
+                        f"## Package Purpose\n"
+                        f"Not enough information to summarize `{pkg_name}` from extractable AST content.\n\n"
+                        f"## Components\n"
+                        f"- No component summaries available.\n\n"
+                        f"## Explicit Cross-Component Dependencies\n"
+                        f"No explicit cross-component dependencies stated.\n\n"
+                        f"## Navigation Guide\n"
+                        f"- Review the source package directly; no extractable AST summaries were generated."
                     )
-                except Exception as e:
-                    plog.error(f"Phase 5c failed: {e}", pkg_name)
-                    async with ds._lock:
-                        ds.errors += 1
-                        ds.add_event(f"ERROR 5c {pkg_name}: {e}")
-                    pkg_overview = f"# {pkg_name}\n\n*Summary generation failed.*"
                     in_t = out_t = 0
+                else:
+                    try:
+                        pkg_overview, in_t, out_t = await phase5c_package(
+                            pkg_name, comp_overviews, config
+                        )
+                    except Exception as e:
+                        plog.error(f"Phase 5c failed: {e}", pkg_name)
+                        async with ds._lock:
+                            ds.errors += 1
+                            ds.add_event(f"ERROR 5c {pkg_name}: {e}")
+                        pkg_overview = f"# {pkg_name}\n\n*Summary generation failed.*"
+                        in_t = out_t = 0
 
                 async with ds._lock:
                     ds.llm_calls += 1
@@ -1291,6 +1313,7 @@ async def _run_summarization_live(
 
             try:
                 index_md, in_t, out_t = await phase5d_index(package_overviews, config)
+                index_md = normalize_index_links(index_md, package_overviews)
             except Exception as e:
                 plog.error(f"Phase 5d failed: {e}", "INDEX")
                 async with ds._lock:
