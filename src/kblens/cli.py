@@ -568,13 +568,14 @@ def _generate_one_source(config: Config, dry_run: bool) -> None:
 
             if _get_markitdown() is None:
                 console.print(
-                    "[yellow]Warning:[/yellow] Document source includes non-text formats "
-                    f"({', '.join(sorted(non_text_exts))}) but [bold]markitdown[/bold] "
-                    "is not installed.\n"
-                    "  Files in these formats will be skipped.\n"
+                    "[bold red]Document source requires markitdown.[/bold red]\n"
+                    f"  Config includes non-text formats: "
+                    f"[cyan]{', '.join(sorted(non_text_exts))}[/cyan]\n"
                     "  Install with: [bold]pip install 'kblens[docs]'[/bold] "
-                    "or [bold]pip install markitdown[/bold]"
+                    "or [bold]pip install markitdown[/bold]\n"
                 )
+                if not typer.confirm("Continue anyway? (files in these formats will be skipped)"):
+                    raise typer.Exit(0)
                 console.print()
 
     # ---- Phase 1: Scan ----
