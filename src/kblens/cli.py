@@ -94,51 +94,70 @@ ENV_VAR_NAME = "KBLENS_KB_PATH"
 
 
 def _set_kb_env_var(output_dir: str) -> None:
-    """Set KBLENS_KB_PATH as a persistent user-level environment variable.
+    """Append output_dir to KBLENS_KB_PATH as a persistent user-level environment variable.
 
-    This lets coding-agent skills locate the knowledge base instantly via
-    ``os.environ["KBLENS_KB_PATH"]`` instead of parsing config files.
+    Instead of overwriting, appends the new path (separated by ; or :) so that
+    multiple knowledge bases accumulate automatically.  ``kblens serve`` can then
+    pick up all of them from the env var.
 
     * **Windows**: uses ``setx`` (user-level, survives reboots).
-    * **macOS / Linux**: writes an ``export`` line to the appropriate shell rc
-      file (``~/.zshrc`` or ``~/.bashrc``).
-
-    The current process' ``os.environ`` is also updated so that any
-    downstream code (e.g. skill install) can read the value immediately.
+    * **macOS / Linux**: writes an ``export`` line to ``~/.zshrc`` or ``~/.bashrc``.
     """
     resolved = str(Path(output_dir).resolve())
-    os.environ[ENV_VAR_NAME] = resolved
+    sep = ";" if platform.system() == "Windows" else ":"
+
+    # Build the combined value: existing paths + new path (deduplicate)
+    current_raw = os.environ.get(ENV_VAR_NAME, "")
+    existing = [p.strip() for p in current_raw.split(sep) if p.strip()]
+
+    # Remove resolved duplicates (same path already present)
+    resolved_norm = Path(resolved).resolve()
+    filtered = []
+    for p in existing:
+        try:
+            if Path(p).resolve() != resolved_norm:
+                filtered.append(p)
+        except Exception:
+            filtered.append(p)
+    # Append new path at the end
+    filtered.append(resolved)
+    new_value = sep.join(filtered)
+
+    # Update current process
+    os.environ[ENV_VAR_NAME] = new_value
 
     if platform.system() == "Windows":
         try:
             subprocess.run(
-                ["setx", ENV_VAR_NAME, resolved],
+                ["setx", ENV_VAR_NAME, new_value],
                 check=True,
                 capture_output=True,
             )
             console.print(
-                f"[dim]Set user env {ENV_VAR_NAME}={resolved} (effective in new terminals)[/dim]"
+                f"[dim]Appended to {ENV_VAR_NAME} "
+                f"(now {len(filtered)} path(s), effective in new terminals)[/dim]"
             )
         except Exception as exc:
             console.print(
                 f"[yellow]Warning:[/yellow] Failed to persist {ENV_VAR_NAME} via setx: {exc}"
             )
     else:
-        # macOS / Linux — append export line to shell rc file
         shell = os.environ.get("SHELL", "")
         rc_file = Path.home() / (".zshrc" if "zsh" in shell else ".bashrc")
-        export_line = f'export {ENV_VAR_NAME}="{resolved}"'
+        export_line = f'export {ENV_VAR_NAME}="{new_value}"'
         try:
-            existing = rc_file.read_text(encoding="utf-8") if rc_file.exists() else ""
-            # Remove any old KBLENS_KB_PATH line, then append the new one
+            existing_rc = rc_file.read_text(encoding="utf-8") if rc_file.exists() else ""
             lines = [
                 ln
-                for ln in existing.splitlines()
+                for ln in existing_rc.splitlines()
                 if not ln.strip().startswith(f"export {ENV_VAR_NAME}=")
             ]
             lines.append(export_line)
             rc_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            console.print(f"[dim]Wrote {ENV_VAR_NAME} to {rc_file} (effective in new shells)[/dim]")
+            console.print(
+                f"[dim]Appended to {ENV_VAR_NAME} in {rc_file} "
+                f"(now {len(filtered)} path(s), effective in new shells)[/dim]"
+            )
         except Exception as exc:
             console.print(
                 f"[yellow]Warning:[/yellow] Failed to persist {ENV_VAR_NAME} in {rc_file}: {exc}"
@@ -524,10 +543,7 @@ def generate(
     # without reading config files.  Skip for dry-run (nothing was written).
     if not dry_run:
         _set_kb_env_var(config.output_dir)
-        resolved_out = str(Path(config.output_dir).resolve())
-        console.print(
-            f"Browse in browser: [cyan]kblens serve --kb {resolved_out}[/cyan]"
-        )
+        console.print("Browse in browser: [cyan]kblens serve[/cyan]")
 
 
 def _generate_one_source(config: Config, dry_run: bool) -> None:

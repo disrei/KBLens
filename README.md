@@ -155,11 +155,13 @@ The generated knowledge base is a directory of Markdown files. You can:
 
 #### Browser Viewer
 
+Each `kblens generate` run **appends** its output directory to the `KBLENS_KB_PATH` environment variable. Run multiple generations (e.g., one for code, one for docs), then a single `kblens serve` shows everything together.
+
 ```bash
-# Auto-detect from KBLENS_KB_PATH environment variable
+# After running generate for each knowledge base, just:
 kblens serve
 
-# Browse a specific output directory
+# Or explicitly specify directories:
 kblens serve --kb ~/kblens_kb/my_project
 
 # Browse multiple knowledge bases (code + docs) together
@@ -172,7 +174,7 @@ kblens serve --config kblens.yaml
 The viewer starts a local HTTP server (default port 9753) with:
 - **Left sidebar** — Collapsible tree showing all sources, packages, and components
 - **Right content** — Markdown rendered with GitHub-dark styling and syntax-highlighted code blocks
-- **Multi-source** — Multiple `--kb` directories are merged; all sources appear in the sidebar
+- **Multi-source** — All KBs from `KBLENS_KB_PATH` and `--kb` flags are merged; all sources appear in the sidebar
 
 ## Document Knowledge Base
 
@@ -383,7 +385,7 @@ summary_language: "en"                # Language for generated summaries
 | Variable | Purpose |
 |----------|---------|
 | `KBLENS_LLM_KEY` | LLM API key (overrides config) |
-| `KBLENS_KB_PATH` | Set automatically after generation; used by AI skills and `kblens serve` to locate the KB. Supports multiple paths separated by `;` (Windows) or `:` (Unix). |
+| `KBLENS_KB_PATH` | Accumulated automatically by each `kblens generate` run; used by AI skills and `kblens serve` to locate all KBs. Supports multiple paths separated by `;` (Windows) or `:` (Unix). |
 
 ## CLI Reference
 
