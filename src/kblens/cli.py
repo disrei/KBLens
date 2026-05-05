@@ -8,6 +8,7 @@ import logging
 import os
 import platform
 import subprocess
+import sys
 import time
 import traceback
 from collections import defaultdict
@@ -93,6 +94,46 @@ from .writer import (
 ENV_VAR_NAME = "KBLENS_KB_PATH"
 
 
+def _env_path_sep() -> str:
+    return ";" if platform.system() == "Windows" else ":"
+
+
+def _split_env_paths(value: str) -> list[str]:
+    sep = _env_path_sep()
+    return [p.strip() for p in value.split(sep) if p.strip()]
+
+
+def _load_persisted_kb_path() -> str:
+    """Read the persisted KB path value, not just the current shell env."""
+    if platform.system() == "Windows":
+        try:
+            import winreg
+
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Environment") as key:
+                value, _ = winreg.QueryValueEx(key, ENV_VAR_NAME)
+                return value or ""
+        except Exception:
+            return os.environ.get(ENV_VAR_NAME, "")
+
+    shell = os.environ.get("SHELL", "")
+    rc_file = Path.home() / (".zshrc" if "zsh" in shell else ".bashrc")
+    if not rc_file.exists():
+        return os.environ.get(ENV_VAR_NAME, "")
+
+    prefix = f"export {ENV_VAR_NAME}="
+    try:
+        for line in rc_file.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith(prefix):
+                value = stripped[len(prefix) :].strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                    value = value[1:-1]
+                return value
+    except Exception:
+        pass
+    return os.environ.get(ENV_VAR_NAME, "")
+
+
 def _set_kb_env_var(output_dir: str) -> None:
     """Append output_dir to KBLENS_KB_PATH as a persistent user-level environment variable.
 
@@ -104,11 +145,11 @@ def _set_kb_env_var(output_dir: str) -> None:
     * **macOS / Linux**: writes an ``export`` line to ``~/.zshrc`` or ``~/.bashrc``.
     """
     resolved = str(Path(output_dir).resolve())
-    sep = ";" if platform.system() == "Windows" else ":"
+    sep = _env_path_sep()
 
     # Build the combined value: existing paths + new path (deduplicate)
-    current_raw = os.environ.get(ENV_VAR_NAME, "")
-    existing = [p.strip() for p in current_raw.split(sep) if p.strip()]
+    current_raw = _load_persisted_kb_path()
+    existing = _split_env_paths(current_raw)
 
     # Remove resolved duplicates (same path already present)
     resolved_norm = Path(resolved).resolve()
@@ -574,8 +615,17 @@ def _generate_one_source(config: Config, dry_run: bool) -> None:
                     "  Install with: [bold]pip install 'kblens[docs]'[/bold] "
                     "or [bold]pip install markitdown[/bold]\n"
                 )
-                if not typer.confirm("Continue anyway? (files in these formats will be skipped)"):
-                    raise typer.Exit(0)
+                if sys.stdin.isatty():
+                    if not typer.confirm(
+                        "Continue anyway? (files in these formats will be skipped)"
+                    ):
+                        raise typer.Exit(0)
+                else:
+                    console.print(
+                        "[red]Error:[/red] markitdown is required for non-interactive runs "
+                        "with non-text document formats"
+                    )
+                    raise typer.Exit(1)
                 console.print()
 
     # ---- Phase 1: Scan ----
@@ -1690,13 +1740,10 @@ def serve(
                 console.print(f"[red]Error loading config:[/red] {e}")
                 raise typer.Exit(1)
         else:
-            env_path = os.environ.get("KBLENS_KB_PATH", "")
+            env_path = _load_persisted_kb_path()
             if env_path:
-                # Support multiple paths separated by ; (Windows) or : (Unix)
-                sep = ";" if os.name == "nt" else ":"
-                for p in env_path.split(sep):
-                    p = p.strip()
-                    if p and Path(p).is_dir():
+                for p in _split_env_paths(env_path):
+                    if Path(p).is_dir():
                         output_dirs.append(Path(p).resolve())
             if not output_dirs:
                 try:

@@ -930,14 +930,24 @@ class KBLensHandler(BaseHTTPRequestHandler):
 def discover_all_sources(output_dirs: list[Path]) -> dict[str, Path]:
     """Discover sources across multiple output directories.
 
-    Returns {source_name: source_dir_path}. If names collide, later dirs win.
+    Returns {source_name: source_dir_path}. If names collide, keep the first and warn.
     """
     source_map: dict[str, Path] = {}
     for output_dir in output_dirs:
         if not output_dir.is_dir():
             continue
         for s in discover_sources(output_dir):
-            source_map[s["name"]] = s["path"]
+            name = s["name"]
+            path = s["path"]
+            if name in source_map:
+                logger.warning(
+                    "Skipping duplicate source name '%s': %s (already using %s)",
+                    name,
+                    path,
+                    source_map[name],
+                )
+                continue
+            source_map[name] = path
     return source_map
 
 
