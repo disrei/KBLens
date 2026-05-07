@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import html as html_module
 import re
 import sys
 from pathlib import Path
@@ -119,10 +120,254 @@ class ConfluenceClient:
 
 _markitdown_instance = None
 
+_NOISE_LINE_PATTERNS = [
+    re.compile(r"^index\\?_cards", re.IGNORECASE),
+    re.compile(r"^plugin\\?_pagetree", re.IGNORECASE),
+    re.compile(r"^gifview\b", re.IGNORECASE),
+    re.compile(r"^center\d*barre$", re.IGNORECASE),
+    re.compile(r"^you don't have anything to do with the div below", re.IGNORECASE),
+    re.compile(r"^[A-Za-z0-9_]+INLINE.*$"),
+    re.compile(r"^[A-Za-z0-9_]+usefultips.*$", re.IGNORECASE),
+    re.compile(r"^\d+%$"),
+    re.compile(r"^color:\s*#?[0-9a-f]{3,8};?$", re.IGNORECASE),
+    re.compile(r"^\]\]>$"),
+    re.compile(r"^plugin_pagetree_expandcollapse.*$", re.IGNORECASE),
+    re.compile(r"^display:\s*none;?$", re.IGNORECASE),
+    re.compile(r"^#title-text.*$", re.IGNORECASE),
+    re.compile(r"^#main-header.*$", re.IGNORECASE),
+    re.compile(r"^\.page-metadata.*$", re.IGNORECASE),
+    re.compile(r"^a,\s*$", re.IGNORECASE),
+    re.compile(r"^a:visited.*$", re.IGNORECASE),
+    re.compile(r"^a:focus.*$", re.IGNORECASE),
+    re.compile(r"^a:hover.*$", re.IGNORECASE),
+    re.compile(r"^a:active.*$", re.IGNORECASE),
+    re.compile(r"^a\.blogHeading.*$", re.IGNORECASE),
+    re.compile(r"^font-size:\s*.*$", re.IGNORECASE),
+    re.compile(r"^font-family:\s*.*$", re.IGNORECASE),
+    re.compile(r"^letter-spacing:\s*.*$", re.IGNORECASE),
+]
+
+
+def _clean_confluence_storage_html(html_content: str) -> str:
+    """Remove Confluence-specific storage noise before HTML->Markdown conversion."""
+    cleaned = html_content
+
+    # Strip CDATA blocks (CSS, inline scripts) — entire block is Confluence noise.
+    cleaned = re.sub(r"<!\[CDATA\[.*?\]\]>", "", cleaned, flags=re.DOTALL)
+
+    # Remove style/script blocks entirely.
+    cleaned = re.sub(r"<style\b[^>]*>.*?</style>", "", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(r"<script\b[^>]*>.*?</script>", "", cleaned, flags=re.IGNORECASE | re.DOTALL)
+
+    # Iterative unwrap: each pass strips one layer of macros, handles nesting.
+    _NOISE_MACRO_NAMES = (
+        r"pagetree|children|excerpt-include|contentbylabel|details|toc|widget|html|css|style"
+        r"|multiexcerpt-include|html-bobswift"
+    )
+    _LAYOUT_MACRO_NAMES = r"section|column|bgcolor|align|banner"
+
+    prev = None
+    while prev != cleaned:
+        prev = cleaned
+
+        # Delete noise macros (outermost layer each pass).
+        cleaned = re.sub(
+            r"<ac:structured-macro\b[^>]*ac:name=\"(?:" + _NOISE_MACRO_NAMES
+            + r")\"[^>]*>.*?</ac:structured-macro>",
+            "",
+            cleaned,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+        # Unwrap layout macros (keep inner content).
+        cleaned = re.sub(
+            r"<ac:structured-macro\b[^>]*ac:name=\"(?:" + _LAYOUT_MACRO_NAMES
+            + r")\"[^>]*>(.*?)</ac:structured-macro>",
+            r"\1",
+            cleaned,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+    # Remove macro body wrappers (keep inner content).
+    cleaned = re.sub(r"</?ac:rich-text-body[^>]*>", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"</?ac:plain-text-body[^>]*>", "", cleaned, flags=re.IGNORECASE)
+
+    # Unwrap layout container tags (keep inner content).
+    cleaned = re.sub(r"</?ac:layout(?:-section|-cell)?\b[^>]*>", "", cleaned, flags=re.IGNORECASE)
+
+    # Unwrap any remaining ac:structured-macro tags (keep inner content).
+    cleaned = re.sub(r"</?ac:structured-macro\b[^>]*>", "", cleaned, flags=re.IGNORECASE)
+
+    # Strip ac:parameter tags (always metadata, not content).
+    cleaned = re.sub(
+        r"<ac:parameter\b[^>]*>.*?</ac:parameter>", "", cleaned,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    # Remove placeholder / attachment nodes (these produce no meaningful text).
+    cleaned = re.sub(
+        r"<(?:ac:placeholder|ri:attachment|ri:url)\b[^>]*>.*?</(?:ac:placeholder|ri:attachment|ri:url)>",
+        "",
+        cleaned,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    # Remove empty paragraphs / cursor targets.
+    cleaned = re.sub(r"<p\b[^>]*>\s*(?:<br\s*/?>\s*)*</p>", "", cleaned, flags=re.IGNORECASE)
+
+    return cleaned
+
+
+def _extract_navigation_fallback(html_content: str, title: str = "") -> str:
+    """Extract a navigation-style Markdown page from noisy storage HTML."""
+    # Extract links.
+    links = re.findall(
+        r'<a\b[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html_content,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    bullets: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for href, label_html in links:
+        label = re.sub(r"<[^>]+>", "", label_html)
+        label = html_module.unescape(label).strip()
+        href = html_module.unescape(href).strip()
+        if not label or len(label) > 200:
+            continue
+        if label.lower() == title.lower():
+            continue
+        key = (label, href)
+        if key in seen:
+            continue
+        seen.add(key)
+        bullets.append(f"- [{label}]({href})")
+        if len(bullets) >= 60:
+            break
+
+    # Extract headings from HTML.
+    headings: list[tuple[int, str]] = []
+    for level in range(1, 7):
+        for m in re.finditer(
+            rf"<(?:h{level}|H{level})\b[^>]*>(.*?)</(?:h{level}|H{level})>",
+            html_content, re.DOTALL,
+        ):
+            h_text = re.sub(r"<[^>]+>", "", m.group(1))
+            h_text = html_module.unescape(h_text).strip()
+            if h_text and len(h_text) > 2 and len(h_text) < 200 and h_text.lower() != title.lower():
+                headings.append((level, h_text))
+
+    lines = [f"# {title}"] if title else []
+    lines.append("")
+    lines.append("*(Navigation-style page with limited standalone text content.)*")
+
+    if headings:
+        lines.append("")
+        lines.append("## Sections")
+        for level, h_text in headings:
+            lines.append(f"{'  ' * (level - 1)}- {h_text}")
+
+    if bullets:
+        lines.append("")
+        lines.append("## Links")
+        lines.extend(bullets)
+    elif not headings:
+        lines.append("")
+        lines.append("*(No structured content could be extracted.)*")
+
+    return "\n".join(lines).strip()
+
+
+def _looks_like_noise_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if any(pat.match(stripped) for pat in _NOISE_LINE_PATTERNS):
+        return True
+    # CSS-like blocks
+    if stripped.startswith((".", "#")) and "{" in stripped:
+        return True
+    if stripped in {"}", "{", "center", "count"}:
+        return True
+    if stripped.endswith("{") or stripped.endswith("}"):
+        return True
+    # Confluence noise tokens
+    if any(token in stripped for token in (
+        "display:none", "page-metadata", "likes-and-labels-container",
+        "#footer", "#comments-section", "auto-cursor-target",
+        "plugin_pagetree_expandcollapse", "data-darkreader-inline-color",
+    )):
+        return True
+    # Long attachment URLs
+    if stripped.startswith("https://confluence.ubisoft.com/download/attachments/") and len(stripped) > 120:
+        return True
+    # Pure CSS property lines
+    if re.match(r"^[a-z-]+\s*:\s*[^;]*;?\s*$", stripped, re.IGNORECASE) and not re.search(r"\b[a-zA-Z]{3,}\b", stripped):
+        return True
+    # Font/style declarations
+    if stripped.startswith("font-") or stripped.startswith("color:") or stripped.startswith("span"):
+        return True
+    return False
+
+
+def _has_substantive_content(text: str, title: str = "") -> bool:
+    """Check if page text has meaningful content beyond title and metadata annotations."""
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    title_line = f"# {title}" if title else None
+    substantive = [
+        l for l in lines
+        if l != title_line
+        and not l.startswith("*(")
+        and not l == "---"
+    ]
+    total_chars = sum(len(l) for l in substantive)
+    return len(substantive) >= 3 and total_chars >= 40
+
+
+def _postprocess_markdown(text: str, title: str = "") -> str:
+    """Clean common Confluence macro/CSS residue after Markdown conversion."""
+    # Strip CSS comments early.
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+
+    lines = text.splitlines()
+    cleaned_lines: list[str] = []
+    skipping_css = False
+
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        stripped = line.strip()
+
+        # Detect CSS block open: `.foo {` or `#bar {`
+        if stripped.startswith((".", "#")) and stripped.endswith("{"):
+            skipping_css = True
+            continue
+        if skipping_css:
+            if stripped == "}":
+                skipping_css = False
+            continue
+
+        if _looks_like_noise_line(line):
+            continue
+
+        cleaned_lines.append(line)
+
+    cleaned = "\n".join(cleaned_lines)
+    # Collapse empty lines
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+    # Keep a single top-level title if present.
+    if title:
+        title_heading = f"# {title}"
+        cleaned = re.sub(rf"^(?:#\s+{re.escape(title)}\s*)+", title_heading + "\n\n", cleaned)
+
+    if cleaned and title and cleaned == title_heading:
+        return cleaned
+
+    return cleaned.strip()
+
 
 def html_to_markdown(html_content: str, title: str = "") -> str:
     """Convert Confluence HTML storage format to Markdown."""
     global _markitdown_instance
+    html_content = _clean_confluence_storage_html(html_content)
 
     # Wrap in a basic HTML document for markitdown
     full_html = f"<html><head><title>{title}</title></head><body>{html_content}</body></html>"
@@ -144,20 +389,24 @@ def html_to_markdown(html_content: str, title: str = "") -> str:
 
         text = result.text_content or ""
         if text.strip():
-            return text
+            cleaned = _postprocess_markdown(text, title)
+            if _has_substantive_content(cleaned, title):
+                return cleaned
     except ImportError:
         pass
     except Exception as e:
-        print(f"  [WARN] markitdown failed: {e}, falling back to basic conversion")
+        import sys as _sys
+        print(f"  [WARN] markitdown failed: {e}", file=_sys.stderr)
 
     # Fallback: basic HTML tag stripping
-    return _basic_html_to_md(html_content, title)
+    cleaned = _postprocess_markdown(_basic_html_to_md(html_content, title), title)
+    if _has_substantive_content(cleaned, title):
+        return cleaned
+    return _extract_navigation_fallback(html_content, title)
 
 
 def _basic_html_to_md(html: str, title: str = "") -> str:
     """Very basic HTML → Markdown fallback (no external deps)."""
-    import html as html_module
-
     text = html
     # Headers
     for i in range(1, 7):
@@ -228,8 +477,10 @@ def crawl_page(
         return 0
 
     title = page.get("title", f"page_{page_id}")
+    # Sanitize for Windows console (cp1252 can't handle zero-width spaces, emoji, etc.)
+    safe_title = title.encode("cp1252", errors="replace").decode("cp1252")
     indent = "  " * depth
-    print(f"{indent}[{depth}] {title}")
+    print(f"{indent}[{depth}] {safe_title}")
 
     # Convert HTML → Markdown
     html_body = page.get("body", {}).get("storage", {}).get("value", "")

@@ -37,6 +37,12 @@ def _write_file(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
+def _leaf_output_name(sub_name: str) -> str:
+    """Return a stable Markdown filename for a leaf summary."""
+    safe = sub_name.replace("/", "_").replace("\\", "_")
+    return safe if safe.lower().endswith(".md") else f"{safe}.md"
+
+
 # ---------------------------------------------------------------------------
 # Full write (used at the end for package overviews + INDEX)
 # ---------------------------------------------------------------------------
@@ -166,8 +172,7 @@ def write_component_incremental(config: Config, cr: ComponentResult) -> None:
                 combined = _append_ast_section(
                     sub_text, cr.submodule_ast.get(sub_name, ""), cr.detected_language
                 )
-                safe = sub_name.replace("/", "_").replace("\\", "_")
-                _write_file(sub_dir / f"{safe}.md", combined)
+                _write_file(sub_dir / _leaf_output_name(sub_name), combined)
 
 
 # Lock for thread-safe meta updates (asyncio tasks may write concurrently)

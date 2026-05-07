@@ -97,12 +97,14 @@ def _parse_llm(raw: dict | None) -> LLMConfig:
     d = _LLM_DEFAULTS
     return LLMConfig(
         model=raw.get("model", d.model),
+        provider=raw.get("provider"),
         api_base=raw.get("api_base"),
         api_key=raw.get("api_key"),
         api_key_env=raw.get("api_key_env"),
         temperature=raw.get("temperature", d.temperature),
         max_concurrent=raw.get("max_concurrent", d.max_concurrent),
         max_concurrent_components=raw.get("max_concurrent_components", d.max_concurrent_components),
+        context_size=raw.get("context_size", d.context_size),
         extra_body=raw.get("extra_body"),
     )
 
@@ -116,6 +118,7 @@ def _parse_packing(raw: dict | None) -> PackingConfig:
         token_min=raw.get("token_min", d.token_min),
         token_max=raw.get("token_max", d.token_max),
         component_split_threshold=raw.get("component_split_threshold", d.component_split_threshold),
+        estimate_chars_per_token=raw.get("estimate_chars_per_token", d.estimate_chars_per_token),
     )
 
 

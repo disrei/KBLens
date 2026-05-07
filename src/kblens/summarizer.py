@@ -57,6 +57,149 @@ def _compute_leaf_max_tokens(batch_input_tokens: int) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Smart token budgeting (character-based heuristic, no tokenizer dependency)
+# ---------------------------------------------------------------------------
+
+_SAFETY_MARGIN = 0.15  # reserve 15% of context for tokenizer variance + padding
+_SYSTEM_PROMPT_ESTIMATE = 200  # conservative estimate of system prompt tokens
+_TEMPLATE_OVERHEAD_ESTIMATE = 600  # conservative estimate of prompt template tokens
+
+# Runtime calibration: each successful LLM call feeds back its actual
+# prompt_tokens so KBLens learns the model's true chars/token ratio.
+# Starts with the config value then converges via exponential moving average.
+_runtime_cpt: float | None = None
+_runtime_cpt_alpha = 0.3  # EMA smoothing factor (higher = faster adaptation)
+
+
+def _get_chars_per_token(config: Config) -> float:
+    """Return the current best estimate of chars-per-token for the model.
+
+    Prefers the runtime-calibrated value (learned from actual LLM
+    responses) over the static config default once enough data is
+    available.
+    """
+    return _runtime_cpt if _runtime_cpt is not None else config.packing.estimate_chars_per_token
+
+
+def _calibrate_cpt(prompt_chars: int, actual_tokens: int) -> None:
+    """Update the running chars-per-token estimate from a real response."""
+    global _runtime_cpt
+    if actual_tokens <= 0 or prompt_chars <= 0:
+        return
+    observed = prompt_chars / actual_tokens
+    if _runtime_cpt is None:
+        _runtime_cpt = observed
+    else:
+        _runtime_cpt = (
+            _runtime_cpt_alpha * observed + (1.0 - _runtime_cpt_alpha) * _runtime_cpt
+        )
+
+
+def _estimate_tokens(text: str, chars_per_token: float = 3.0) -> int:
+    """Rough token estimate: characters / *chars_per_token*.
+
+    Most tokenizers average 3-4 chars per token for English text; C++
+    source code tends to be slightly denser.  Using a lower value (e.g.
+    3.0) over-estimates, which is the safe direction for pre-flight
+    context checks.
+    """
+    return max(1, int(len(text) / chars_per_token))
+
+
+def _compute_code_budget(context_size: int, output_max: int) -> int:
+    """How many tokens of source code / summary text can we safely pack?
+
+    Returns the budget available for AST content or pre-written summaries
+    after deducting system prompt, template overhead, output budget, and
+    a 15 % safety margin.
+    """
+    safe_context = int(context_size * (1.0 - _SAFETY_MARGIN))
+    budget = safe_context - _SYSTEM_PROMPT_ESTIMATE - _TEMPLATE_OVERHEAD_ESTIMATE - output_max
+    return max(400, budget)  # floor: at least enough for a tiny batch
+
+
+def _truncate_text_for_context(
+    text: str,
+    context_size: int,
+    output_max: int,
+    chars_per_token: float = 3.0,
+) -> str:
+    """Truncate *text* so that ``tokens(text) + system + output_max`` fits in context.
+
+    Used for aggregate prompts (component, package, INDEX) where the input
+    is pre-written summaries that may grow very large.
+
+    Truncation strategy: keep sections (delimited by ``\\n\\n### ``) from the
+    back toward the front until the budget is filled, then drop the rest
+    with a note.
+    """
+    budget = _compute_code_budget(context_size, output_max)
+    current_tokens = _estimate_tokens(text, chars_per_token)
+    if current_tokens <= budget:
+        return text
+
+    # Split into top-level sections (package/component boundaries)
+    sections = re.split(r"\n(?=###?\s)", text)
+    char_budget = int(budget * chars_per_token)
+    if len(sections) <= 1:
+        # Can't split meaningfully — hard cut
+        return text[:char_budget] + "\n\n*[truncated: input too large for context window]*"
+
+    kept: list[str] = []
+    kept_tokens = 0
+    for sec in reversed(sections):
+        t = _estimate_tokens(sec, chars_per_token)
+        if kept_tokens + t <= budget:
+            kept.insert(0, sec)
+            kept_tokens += t
+        else:
+            break
+
+    if not kept:
+        return sections[-1][:char_budget] + "\n\n*[truncated]*"
+
+    result = "\n".join(kept).strip()
+    if len(kept) < len(sections):
+        result = f"*[{len(sections) - len(kept)} section(s) omitted to fit context window]*\n\n" + result
+    return result
+
+
+def _truncate_prompt_to_context(
+    prompt: str,
+    system: str,
+    context_size: int,
+    max_tokens: int,
+    chars_per_token: float,
+) -> str:
+    """Trim a prompt body so the full request fits inside the context window.
+
+    Keeps the *tail* of the prompt, which usually contains the most specific
+    AST/source payload, and prepends a truncation note when material was dropped.
+    This is a generic fallback used when either pre-flight estimation or the
+    provider reports context overflow.
+    """
+    system_tokens = _estimate_tokens(system, chars_per_token)
+    safe_context = int(context_size * (1.0 - _SAFETY_MARGIN))
+    allowed_prompt_tokens = safe_context - system_tokens - max_tokens
+    if allowed_prompt_tokens <= 0:
+        return prompt
+
+    current_prompt_tokens = _estimate_tokens(prompt, chars_per_token)
+    if current_prompt_tokens <= allowed_prompt_tokens:
+        return prompt
+
+    allowed_chars = int(allowed_prompt_tokens * chars_per_token)
+    if allowed_chars <= 0:
+        return prompt
+
+    note = "*[truncated to fit context]*\n\n"
+    tail_chars = max(0, allowed_chars - len(note))
+    if tail_chars <= 0:
+        return note[:allowed_chars]
+    return note + prompt[-tail_chars:]
+
+
+# ---------------------------------------------------------------------------
 # Prompt templates  (keep concise — every token costs money)
 # ---------------------------------------------------------------------------
 
@@ -283,20 +426,76 @@ def _is_retryable(exc: Exception) -> bool:
     return any(s in exc_str for s in _RETRYABLE_STRINGS)
 
 
-def _normalize_model_for_litellm(model: str, api_base: str | None) -> tuple[str, bool]:
+# litellm provider prefix list (subset of frequently used providers).
+# When a model name like "custom-org/deepseek-v4" has a '/' but the prefix
+# is NOT in this set, KBLens auto-wraps it as "openai/custom-org/deepseek-v4"
+# so litellm routes via the OpenAI adapter while the API receives the full
+# original identifier.  Provider names are lowercased for matching.
+_KNOWN_LITELLM_PREFIXES: set[str] = {
+    "openai",
+    "anthropic",
+    "azure",
+    "azure_ai",
+    "cohere",
+    "huggingface",
+    "ollama",
+    "ollama_chat",
+    "mistral",
+    "groq",
+    "deepseek",
+    "minimax",
+    "openrouter",
+    "replicate",
+    "bedrock",
+    "vertex_ai",
+    "together_ai",
+    "fireworks_ai",
+    "anyscale",
+    "voyage",
+    "databricks",
+    "cloudflare",
+    "jina_ai",
+    "friendliai",
+    "deepinfra",
+    "perplexity",
+    "clarifai",
+    "maritalk",
+    "xai",
+    "nvidia_nim",
+    "sambanova",
+    "watsonx",
+    "predibase",
+    "gemini",
+}
+"""Known litellm provider prefixes.  The set is maintained manually so we don't
+have to parse litellm's internal registry at import time."""
+
+
+def _normalize_model_for_litellm(model: str, api_base: str | None, provider: str | None = None) -> tuple[str, bool]:
     """Normalize model name for litellm.
 
-    litellm requires provider prefixes (e.g., 'openai/', 'anthropic/', 'minimax/').
-    Many users only have the raw model ID from their provider's dashboard.
+    litellm uses ``provider/model`` notation to route requests to the correct
+    adapter (e.g. ``openai/gpt-4o``, ``anthropic/claude-3-opus``).
 
-    This function auto-adds 'openai/' prefix when:
-    - model has no '/' (no provider prefix)
-    - api_base is set (suggests OpenAI-compatible endpoint)
+    When a model name already has a ``/`` but the prefix is **not** a known
+    litellm provider, the function wraps the whole string with ``openai/``
+    so that litellm routes via the OpenAI-compatible adapter while the API
+    still receives the original, full identifier (e.g.
+    ``openai/my-org/my-model`` → API sees ``my-org/my-model``).
 
     Returns:
         (normalized_model, was_inferred): The model name to use and whether prefix was auto-added.
     """
+    if provider:
+        parts = model.split("/", 1)
+        if len(parts) == 2 and parts[0] == provider:
+            return model, False
+        return f"{provider}/{model}", True
+
     if "/" in model:
+        prefix = model.split("/", 1)[0].lower()
+        if prefix not in _KNOWN_LITELLM_PREFIXES and api_base:
+            return f"openai/{model}", True
         return model, False
 
     if not api_base:
@@ -317,7 +516,7 @@ async def _llm_call(
     Retries up to LLM_MAX_RETRIES times on transient errors (timeout, 429, 5xx).
     """
     normalized_model, was_inferred = _normalize_model_for_litellm(
-        config.llm.model, config.llm.api_base
+        config.llm.model, config.llm.api_base, config.llm.provider
     )
 
     if was_inferred:
@@ -348,6 +547,28 @@ async def _llm_call(
     if config.llm.extra_body:
         kwargs["extra_body"] = config.llm.extra_body
 
+    # ---- Pre-flight context check ----
+    cpt = _get_chars_per_token(config)
+    estimated_input = _estimate_tokens(system, cpt) + _estimate_tokens(prompt, cpt)
+    total_estimate = estimated_input + max_tokens
+    if total_estimate > config.llm.context_size:
+        logger.warning(
+            "Prompt estimate %d tokens (system=%d + prompt=%d + max_out=%d) exceeds context_size=%d; truncating before request",
+            total_estimate,
+            _estimate_tokens(system, cpt),
+            _estimate_tokens(prompt, cpt),
+            max_tokens,
+            config.llm.context_size,
+        )
+        prompt = _truncate_prompt_to_context(
+            prompt,
+            system,
+            config.llm.context_size,
+            max_tokens,
+            cpt,
+        )
+        kwargs["messages"][1]["content"] = prompt
+
     last_exc: Exception | None = None
     _thinking_warned = False
     for attempt in range(1, LLM_MAX_RETRIES + 1):
@@ -358,26 +579,19 @@ async def _llm_call(
                 # Check if the model produced reasoning_content instead of content
                 # (thinking models like Qwen3.5, DeepSeek-R1, etc.)
                 msg = response.choices[0].message
-                has_reasoning = bool(
+                reasoning = (
                     getattr(msg, "reasoning_content", None)
                     or (hasattr(msg, "model_extra") and msg.model_extra.get("reasoning_content"))
                 )
-                if has_reasoning and not _thinking_warned:
+                if reasoning and not _thinking_warned:
                     _thinking_warned = True
-                    logger.error(
-                        "LLM returned empty content but has reasoning_content — "
-                        "the model is in 'thinking mode' and all output went to "
-                        "internal reasoning. Disable thinking in your kblens config:\n"
-                        "\n"
-                        "  llm:\n"
-                        "    extra_body:\n"
-                        "      chat_template_kwargs:\n"
-                        "        enable_thinking: false\n"
+                    logger.warning(
+                        "Model returned empty content but had reasoning_content. "
+                        "Treating this as an empty final answer rather than using internal reasoning as summary. "
+                        "Disable thinking if your provider supports it, or use a non-reasoning model variant."
                     )
-                raise ValueError(
-                    "LLM returned empty content"
-                    + (" (thinking mode detected — see above for fix)" if has_reasoning else "")
-                )
+                if not text:
+                    raise ValueError("LLM returned empty content")
             finish_reason = getattr(response.choices[0], "finish_reason", None)
             if finish_reason == "length":
                 logger.warning(
@@ -387,6 +601,10 @@ async def _llm_call(
             usage = response.usage
             in_tok = usage.prompt_tokens if usage else 0
             out_tok = usage.completion_tokens if usage else 0
+            # Calibrate chars-per-token from this actual response
+            prompt_chars = len(system) + len(prompt)
+            if in_tok > 0 and prompt_chars > 0:
+                _calibrate_cpt(prompt_chars, in_tok)
             return text, in_tok, out_tok
         except Exception as e:
             last_exc = e
@@ -400,6 +618,28 @@ async def _llm_call(
                     config.llm.model,
                     config.llm.model,
                 )
+            # Context overflow: truncate prompt and retry once
+            is_overflow = (
+                "exceeds" in err_str and "context" in err_str
+            ) or "prompt too long" in err_str
+            if is_overflow and attempt <= 2:
+                cpt = _get_chars_per_token(config)
+                new_prompt = _truncate_prompt_to_context(
+                    prompt,
+                    system,
+                    config.llm.context_size,
+                    max_tokens,
+                    cpt,
+                )
+                if new_prompt != prompt:
+                    prompt = new_prompt
+                    kwargs["messages"][1]["content"] = prompt
+                    logger.warning(
+                        "Truncated prompt to %d chars (%d estimated tokens) after context overflow",
+                        len(prompt),
+                        _estimate_tokens(prompt, cpt),
+                    )
+                    continue
             if attempt < LLM_MAX_RETRIES and _is_retryable(e):
                 delay = min(
                     LLM_RETRY_BASE_DELAY * (2 ** (attempt - 1)) + random.uniform(0, 1),
@@ -447,15 +687,28 @@ def _build_batch_content(
     dir_tree = ", ".join(sorted(batch_dirs)) if batch_dirs else "(root)"
 
     ast_lines: list[str] = []
-    for rel_path, entry in sorted(ast_map.items()):
-        d = entry.dir or "."
-        if d in batch_dirs or (d == "" and ("" in batch_dirs or "." in batch_dirs)):
+    if batch.entry_keys:
+        # File-level split: include only the exact entry keys listed.
+        for rel_path in batch.entry_keys:
+            entry = ast_map.get(rel_path)
+            if entry is None:
+                continue
             if separator_format == "doc":
                 ast_lines.append(f"### From: {rel_path}")
             else:
                 ast_lines.append(f"// --- {rel_path} ---")
             ast_lines.append(entry.content)
             ast_lines.append("")
+    else:
+        for rel_path, entry in sorted(ast_map.items()):
+            d = entry.dir or "."
+            if d in batch_dirs or (d == "" and ("" in batch_dirs or "." in batch_dirs)):
+                if separator_format == "doc":
+                    ast_lines.append(f"### From: {rel_path}")
+                else:
+                    ast_lines.append(f"// --- {rel_path} ---")
+                ast_lines.append(entry.content)
+                ast_lines.append("")
 
     return "\n".join(ast_lines), dir_tree
 
@@ -636,6 +889,10 @@ async def phase5b_component(
     for name, summary in sorted(submodule_summaries.items()):
         text_parts.append(f"### {name}\n{summary}")
     submodule_text = "\n\n".join(text_parts)
+    submodule_text = _truncate_text_for_context(
+        submodule_text, config.llm.context_size, COMPONENT_MAX_TOKENS,
+        _get_chars_per_token(config),
+    )
 
     prompt = COMPONENT_PROMPT.format(
         component_name=component.name,
@@ -663,14 +920,19 @@ async def phase5c_package(
         sections.append(f"### {name} ({fc} files)\n{overview}")
     component_sections = "\n\n".join(sections)
 
+    # Keep package summaries short for smaller local models.
+    n_components = len(component_overviews)
+    max_out = max(PACKAGE_MAX_TOKENS, min(n_components * 18 + 180, 1600))
+    component_sections = _truncate_text_for_context(
+        component_sections, config.llm.context_size, max_out,
+        _get_chars_per_token(config),
+    )
+
     prompt = PACKAGE_PROMPT.format(
         package_name=pkg_name,
         component_sections=component_sections,
         summary_language=config.summary_language,
     )
-    # Keep package summaries short for smaller local models.
-    n_components = len(component_overviews)
-    max_out = max(PACKAGE_MAX_TOKENS, min(n_components * 18 + 180, 1600))
     return await _llm_call(prompt, config, max_tokens=max_out)
 
 
@@ -688,6 +950,10 @@ async def phase5d_index(
     for name, (overview, source_name) in sorted(package_overviews.items()):
         sections.append(f"### {name} (source: {source_name})\n{overview}")
     package_sections = "\n\n".join(sections)
+    package_sections = _truncate_text_for_context(
+        package_sections, config.llm.context_size, INDEX_MAX_TOKENS,
+        _get_chars_per_token(config),
+    )
 
     prompt = INDEX_PROMPT.format(
         package_sections=package_sections,

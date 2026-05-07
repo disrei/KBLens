@@ -213,9 +213,17 @@ def phase2_extract_docs(
     ast_map: dict[str, ASTEntry] = {}
     comp_path = component.path
 
-    # Collect all document files
+    # Collect all document files.
+    #
+    # Document sources: scanner creates one component per directory, each
+    # handling only its direct files.  Must use iterdir() — NOT rglob() —
+    # so extraction stays aligned with the scanner contract and avoids
+    # recursively swallowing subdirectory files that belong to their own
+    # child components.
     doc_files: list[Path] = []
-    for f in sorted(comp_path.rglob("*")):
+    file_iter = comp_path.iterdir()
+
+    for f in sorted(file_iter):
         if not f.is_file():
             continue
         if f.stat().st_size > MAX_DOC_FILE_SIZE:

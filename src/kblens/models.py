@@ -153,12 +153,14 @@ class LLMConfig:
     """LLM connection settings."""
 
     model: str = "gpt-4o-mini"
+    provider: str | None = None  # litellm provider (openai, anthropic, etc.). Auto-detected if None.
     api_base: str | None = None
     api_key: str | None = None
     api_key_env: str | None = None
     temperature: float = 0.2
     max_concurrent: int = 8
     max_concurrent_components: int = 8
+    context_size: int = 16384  # model context window — used for smart budget calculation
     extra_body: dict[str, Any] | None = None  # extra params passed to litellm (e.g. thinking mode)
     # Resolved at runtime (not from YAML)
     _resolved_api_key: str = ""
@@ -172,6 +174,7 @@ class PackingConfig:
     token_min: int = 1000
     token_max: int = 24000
     component_split_threshold: int = 200
+    estimate_chars_per_token: float = 1.5  # for char-based token estimation
 
 
 @dataclass
@@ -239,20 +242,29 @@ class ASTEntry:
 
 @dataclass
 class Batch:
-    """One LLM batch — a group of directories within token budget."""
+    """One LLM batch — a group of directories within token budget.
+
+    When *entry_keys* is non-empty, the batch pinpoints individual AST entries
+    (by their ``ast_map`` key) instead of selecting by directory.  This is
+    used when a single directory's token count exceeds the budget and must be
+    split at the file level.
+    """
 
     dirs: list[str]
     tokens: int
     group_key: str = ""
+    entry_keys: list[str] = field(default_factory=list)
 
     def merge(self, other: Batch) -> None:
         """Merge another batch into this one (append)."""
         self.dirs.extend(other.dirs)
+        self.entry_keys.extend(other.entry_keys)
         self.tokens += other.tokens
 
     def merge_front(self, other: Batch) -> None:
         """Merge another batch before this one (prepend)."""
         self.dirs = other.dirs + self.dirs
+        self.entry_keys = other.entry_keys + self.entry_keys
         self.tokens += other.tokens
 
 

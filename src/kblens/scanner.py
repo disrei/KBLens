@@ -200,6 +200,80 @@ def _count_direct_code_files(
     return file_count, total_lines
 
 
+def _iter_non_skippable_dirs(root: Path) -> list[Path]:
+    """Return all descendant directories that are not skippable."""
+    result: list[Path] = []
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        try:
+            children = sorted(
+                c for c in current.iterdir() if c.is_dir() and not _is_skippable_dir(c.name)
+            )
+        except (OSError, PermissionError):
+            continue
+        result.extend(children)
+        stack.extend(reversed(children))
+    return result
+
+
+def _scan_document_source(
+    source,
+    src_path: Path,
+    include_exts: set[str],
+    exclude_patterns: list[str],
+) -> list[Component]:
+    """Scan a document source using direct-file components per directory.
+
+    Document trees behave better when each directory contributes at most one
+    component made only from its direct files. This avoids giant recursive
+    components like ``GAME_CONTENT`` swallowing hundreds of documents while
+    preserving a hierarchical package/component layout.
+    """
+    components: list[Component] = []
+
+    if _has_direct_code_files(src_path, include_exts, exclude_patterns):
+        fc, tl = _count_direct_code_files(src_path, include_exts, exclude_patterns)
+        if fc > 0:
+            components.append(
+                Component(
+                    source_name=source.name,
+                    package_name="_root",
+                    name="_root",
+                    path=src_path,
+                    file_count=fc,
+                    total_lines=tl,
+                )
+            )
+
+    try:
+        top_dirs = sorted(p for p in src_path.iterdir() if p.is_dir() and not _is_skippable_dir(p.name))
+    except (OSError, PermissionError):
+        return components
+
+    for pkg_path in top_dirs:
+        pkg_name = pkg_path.name
+        candidate_dirs = [pkg_path, *_iter_non_skippable_dirs(pkg_path)]
+        for current in candidate_dirs:
+            fc, tl = _count_direct_code_files(current, include_exts, exclude_patterns)
+            if fc == 0:
+                continue
+            rel = current.relative_to(pkg_path)
+            name = f"{pkg_name}._root" if rel == Path(".") else str(rel).replace("\\", "/")
+            components.append(
+                Component(
+                    source_name=source.name,
+                    package_name=pkg_name,
+                    name=name,
+                    path=current,
+                    file_count=fc,
+                    total_lines=tl,
+                )
+            )
+
+    return components
+
+
 def _has_src_or_include(path: Path) -> bool:
     """Check if directory has its own src/ or include/ subdirectory with code."""
     for sub_name in ("src", "include", "Source", "Include"):
@@ -265,6 +339,12 @@ def phase1_scan(config: Config, include_exts: set[str] | None = None) -> list[Co
         src_path = Path(source.path)
         if not src_path.is_dir():
             logger.warning("Source directory not found, skipping: %s", src_path)
+            continue
+
+        if source.type == "document":
+            components.extend(
+                _scan_document_source(source, src_path, include_exts, config.exclude_patterns)
+            )
             continue
 
         # Step 1: discover all directories that contain code files (recursively).

@@ -766,7 +766,7 @@ def _generate_one_source(config: Config, dry_run: bool) -> None:
         for comp in to_extract:
             short = comp.key.split("/")[-1]
             prog.update(task, current=f"[dim]{short}[/dim]")
-            pack_result = phase3_pack(comp, ast_data[comp.key], config.packing)
+            pack_result = phase3_pack(comp, ast_data[comp.key], config.packing, config.llm.context_size)
             pack_data[comp.key] = pack_result
             total_batches += len(pack_result.batches)
             agg_count += len(pack_result.aggregation_groups)
@@ -932,8 +932,17 @@ async def _process_one_component(
                     output_tokens=out_tok,
                 )
 
+        async def _do_batch_with_progress(batch):
+            result = await _do_batch(batch)
+            async with ds._lock:
+                ds.llm_calls += 1
+            plog.llm_call("leaf", comp.key, result.input_tokens, result.output_tokens)
+            return result
+
         try:
-            summaries = list(await asyncio.gather(*(_do_batch(b) for b in pack_result.batches)))
+            summaries = list(await asyncio.gather(
+                *(_do_batch_with_progress(b) for b in pack_result.batches)
+            ))
         except Exception as e:
             plog.error(f"Phase 4 failed: {e}", comp.key)
             # Record failure in meta so it can be retried next run
@@ -952,11 +961,6 @@ async def _process_one_component(
             progress.update(comp_task, completed=ds.done_components)
             _refresh_live(live_ref, ds, progress)
             return None
-
-        for s in summaries:
-            async with ds._lock:
-                ds.llm_calls += 1
-            plog.llm_call("leaf", comp.key, s.input_tokens, s.output_tokens)
 
         # ---- Phase 5a: aggregate fragments ----
         submodule_summaries: dict[str, str] = {}
