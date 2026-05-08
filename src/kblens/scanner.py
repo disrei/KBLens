@@ -52,6 +52,7 @@ _SKIP_DIRS = frozenset(
         ".venv",
         "env",
         ".env",
+        "_images",
     }
 )
 

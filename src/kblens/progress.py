@@ -120,6 +120,9 @@ class ProgressLog:
     def component_changed(self, key: str) -> None:
         self._write({"event": "comp_changed", "key": key})
 
+    def component_retrying(self, key: str) -> None:
+        self._write({"event": "comp_retrying", "key": key})
+
     # -- Final --
     def finished(self, components: int, summaries: int, in_tok: int, out_tok: int) -> None:
         self._write(

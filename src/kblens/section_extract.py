@@ -143,7 +143,8 @@ def process_images(content: str, handling: str = "reference") -> str:
 
     Args:
         content: Markdown text.
-        handling: ``"reference"`` keeps images as ``[Image: alt](path)``;
+        handling: ``"reference"`` keeps ``![alt](path)`` image syntax intact
+                  so downstream renderers (kblens serve) can display images;
                   ``"ignore"`` removes image references entirely.
 
     Returns:
@@ -152,13 +153,11 @@ def process_images(content: str, handling: str = "reference") -> str:
     if handling == "ignore":
         return _IMAGE_RE.sub("", content)
 
-    # handling == "reference": convert ![alt](path) → [Image: alt](path)
-    def _replace_image(m: re.Match) -> str:
-        alt = m.group(1).strip() or Path(m.group(2)).stem
-        path = m.group(2)
-        return f"[Image: {alt}]({path})"
-
-    return _IMAGE_RE.sub(_replace_image, content)
+    # handling == "reference": keep ![alt](path) as-is.
+    # Images are preserved in the Markdown so they appear in the
+    # "Original Content" section of the knowledge base output and can
+    # be rendered by ``kblens serve``.
+    return content
 
 
 # ---------------------------------------------------------------------------

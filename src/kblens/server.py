@@ -829,6 +829,8 @@ class KBLensHandler(BaseHTTPRequestHandler):
             self._serve_tree(query)
         elif path == "/api/page":
             self._serve_page(query)
+        elif path.startswith("/assets/"):
+            self._serve_asset(path)
         else:
             self._serve_404()
 
@@ -847,6 +849,66 @@ class KBLensHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    _MIME_TYPES: dict[str, str] = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".svg": "image/svg+xml",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+        ".ico": "image/x-icon",
+    }
+
+    def _serve_asset(self, path: str) -> None:
+        """Serve a static asset (image) from a KB source directory.
+
+        URL format: ``/assets/{source_name}/{relative/path/to/file}``
+        """
+        # Strip leading "/assets/"
+        rest = path[len("/assets/"):]
+        if "/" not in rest:
+            self._serve_404()
+            return
+
+        source_name, _, rel_path = rest.partition("/")
+        source_dir = self.source_map.get(source_name)
+        if not source_dir:
+            self._serve_404()
+            return
+
+        # Security: prevent path traversal
+        try:
+            safe_path = Path(rel_path)
+            if safe_path.is_absolute() or ".." in safe_path.parts:
+                self._send_json({"error": "Invalid path"}, 400)
+                return
+        except Exception:
+            self._send_json({"error": "Invalid path"}, 400)
+            return
+
+        file_path = source_dir / safe_path
+        if not file_path.exists() or not file_path.is_file():
+            self._serve_404()
+            return
+
+        # Ensure file is within source_dir
+        try:
+            file_path.resolve().relative_to(source_dir.resolve())
+        except ValueError:
+            self._send_json({"error": "Access denied"}, 403)
+            return
+
+        ext = file_path.suffix.lower()
+        mime = self._MIME_TYPES.get(ext, "application/octet-stream")
+        data = file_path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.end_headers()
+        self.wfile.write(data)
 
     def _serve_404(self) -> None:
         self._send_json({"error": "Not found"}, 404)
@@ -919,6 +981,17 @@ class KBLensHandler(BaseHTTPRequestHandler):
 
         text = file_path.read_text(encoding="utf-8")
         html = render_markdown(text)
+
+        # Rewrite relative image paths to /assets/{source_name}/{dir}/...
+        # so the browser can fetch them via the asset route.
+        rel_dir = str(safe_path.parent).replace("\\", "/")
+        asset_prefix = f"/assets/{source_name}/{rel_dir}/" if rel_dir != "." else f"/assets/{source_name}/"
+        html = re.sub(
+            r'(<img\b[^>]*\bsrc=")(?!https?://|/)',
+            lambda m: m.group(1) + asset_prefix,
+            html,
+        )
+
         self._send_json({"html": html, "path": rel_path})
 
 

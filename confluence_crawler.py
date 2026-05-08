@@ -11,9 +11,12 @@ Requires: pip install requests markitdown
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import getpass
 import html as html_module
+import json
 import re
+import shutil
 import sys
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
@@ -69,14 +72,18 @@ class ConfluenceClient:
         elif username and password:
             self.session.auth = (username, password)
 
-    def _get(self, endpoint: str, params: dict | None = None) -> dict:
+    def _get(self, endpoint: str, params: dict | None = None) -> dict | None:
         url = f"{self.base_url}/rest/api{endpoint}"
-        resp = self.session.get(url, params=params, timeout=30)
-        if resp.status_code == 401:
-            print("[ERROR] Authentication failed. Check token/credentials.")
-            sys.exit(1)
-        resp.raise_for_status()
-        return resp.json()
+        try:
+            resp = self.session.get(url, params=params, timeout=(10, 25))
+            if resp.status_code == 401:
+                print("[ERROR] Authentication failed. Check token/credentials.")
+                sys.exit(1)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException as e:
+            print(f"  [WARN] API request failed: {endpoint}: {e}", file=sys.stderr)
+            return None
 
     def get_page_by_title(self, space_key: str, title: str) -> dict | None:
         """Find a page by space key and title."""
@@ -89,7 +96,7 @@ class ConfluenceClient:
         results = data.get("results", [])
         return results[0] if results else None
 
-    def get_page_by_id(self, page_id: str) -> dict:
+    def get_page_by_id(self, page_id: str) -> dict | None:
         """Get a page by its ID."""
         return self._get(f"/content/{page_id}", params={
             "expand": "body.storage,children.page,version,ancestors",
@@ -106,12 +113,43 @@ class ConfluenceClient:
                 "limit": limit,
                 "expand": "version",
             })
+            if data is None:
+                break  # API error, return what we have
             results = data.get("results", [])
             children.extend(results)
             if len(results) < limit:
                 break
             start += limit
         return children
+
+    def get_attachments(self, page_id: str) -> list[dict]:
+        """Get all attachments for a page."""
+        attachments = []
+        start = 0
+        limit = 50
+        while True:
+            data = self._get(f"/content/{page_id}/child/attachment", params={
+                "start": start,
+                "limit": limit,
+            })
+            if data is None:
+                break  # API error, return what we have
+            results = data.get("results", [])
+            attachments.extend(results)
+            if len(results) < limit:
+                break
+            start += limit
+        return attachments
+
+    def download_attachment(self, url: str) -> bytes | None:
+        """Download an attachment by URL. Returns bytes or None."""
+        try:
+            resp = self.session.get(url, timeout=20)
+            resp.raise_for_status()
+            return resp.content
+        except Exception:
+            # Silent skip — too many 500s from Confluence for thumbnails
+            return None
 
 
 # ---------------------------------------------------------------------------
@@ -148,9 +186,62 @@ _NOISE_LINE_PATTERNS = [
 ]
 
 
-def _clean_confluence_storage_html(html_content: str) -> str:
+def _convert_ac_images(html_content: str, page_id: str = "", base_url: str = "") -> str:
+    """Convert Confluence <ac:image> tags to standard <img> tags.
+
+    Confluence stores images in two forms:
+      1. Attachment: <ac:image><ri:attachment ri:filename="x.png"/></ac:image>
+      2. External URL: <ac:image><ri:url ri:value="https://..."/></ac:image>
+
+    This converts them to <img src="..." alt="..."> so markitdown can handle them.
+    """
+    def _replace_image(m: re.Match) -> str:
+        inner = m.group(1)
+
+        # Try attachment: ri:filename="..."
+        fname_m = re.search(r'ri:filename="([^"]+)"', inner)
+        if fname_m:
+            filename = html_module.unescape(fname_m.group(1))
+            # Build download URL: /download/attachments/{pageId}/{filename}
+            if page_id:
+                src = f"{base_url}/download/attachments/{page_id}/{quote(filename)}"
+            else:
+                src = filename
+            alt = Path(filename).stem
+            return f'<img src="{src}" alt="{alt}" />'
+
+        # Try external URL: ri:value="..."
+        url_m = re.search(r'ri:value="([^"]+)"', inner)
+        if url_m:
+            src = html_module.unescape(url_m.group(1))
+            alt = Path(urlparse(src).path).stem or "image"
+            return f'<img src="{src}" alt="{alt}" />'
+
+        return ""  # unknown image format — drop
+
+    # Match <ac:image ...> ... </ac:image> (may have attributes on ac:image itself)
+    html_content = re.sub(
+        r"<ac:image\b[^>]*>(.*?)</ac:image>",
+        _replace_image,
+        html_content,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    # Also handle self-closing: <ac:image ... />
+    html_content = re.sub(
+        r"<ac:image\b[^/]*/\s*>",
+        "",
+        html_content,
+        flags=re.IGNORECASE,
+    )
+    return html_content
+
+
+def _clean_confluence_storage_html(
+    html_content: str, page_id: str = "", base_url: str = "",
+) -> str:
     """Remove Confluence-specific storage noise before HTML->Markdown conversion."""
-    cleaned = html_content
+    # Convert ac:image to standard <img> BEFORE stripping ri:attachment nodes.
+    cleaned = _convert_ac_images(html_content, page_id, base_url)
 
     # Strip CDATA blocks (CSS, inline scripts) — entire block is Confluence noise.
     cleaned = re.sub(r"<!\[CDATA\[.*?\]\]>", "", cleaned, flags=re.DOTALL)
@@ -364,10 +455,13 @@ def _postprocess_markdown(text: str, title: str = "") -> str:
     return cleaned.strip()
 
 
-def html_to_markdown(html_content: str, title: str = "") -> str:
+def html_to_markdown(
+    html_content: str, title: str = "",
+    page_id: str = "", base_url: str = "",
+) -> str:
     """Convert Confluence HTML storage format to Markdown."""
     global _markitdown_instance
-    html_content = _clean_confluence_storage_html(html_content)
+    html_content = _clean_confluence_storage_html(html_content, page_id, base_url)
 
     # Wrap in a basic HTML document for markitdown
     full_html = f"<html><head><title>{title}</title></head><body>{html_content}</body></html>"
@@ -440,6 +534,125 @@ def _basic_html_to_md(html: str, title: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 
+_IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp", ".ico"})
+
+
+def _download_single_image(args: tuple) -> tuple[str, str] | None:
+    """Download one image URL.  Returns (original_url, local_rel_path) or None."""
+    client, full_url, page_id, filename_encoded, images_dir = args
+    filename = unquote(filename_encoded)
+    ext = Path(filename).suffix.lower()
+    if ext not in _IMAGE_EXTS:
+        return None
+
+    safe_fname = sanitize_filename(Path(filename).stem) + ext
+    local_path = images_dir / safe_fname
+    if local_path.exists():
+        return (full_url, f"_images/{safe_fname}")
+
+    data = client.download_attachment(full_url)
+    if data is None:
+        return None
+
+    local_path.write_bytes(data)
+    return (full_url, f"_images/{safe_fname}")
+
+
+def _download_page_images(
+    client: ConfluenceClient,
+    page_id: str,
+    md_content: str,
+    output_dir: Path,
+) -> str:
+    """Download images referenced in md_content concurrently.
+
+    Attachment images are downloaded to ``output_dir/_images/``.
+    Returns the updated Markdown content with local image paths.
+    """
+    att_pattern = re.compile(
+        r"!\[([^\]]*)\]\(([^)]+/download/attachments/" + re.escape(page_id) + r"/([^)]+))\)"
+    )
+    matches = att_pattern.findall(md_content)
+    if not matches:
+        return md_content
+
+    images_dir = output_dir / "_images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    # Deduplicate by URL before launching concurrent downloads.
+    seen_urls: set[str] = set()
+    work = []
+    for alt, full_url, filename_encoded in matches:
+        if full_url not in seen_urls:
+            seen_urls.add(full_url)
+            work.append((client, full_url, page_id, filename_encoded, images_dir))
+
+    downloaded: dict[str, str] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        results = pool.map(_download_single_image, work)
+
+    for r in results:
+        if r is not None:
+            orig_url, local_rel = r
+            downloaded[orig_url] = local_rel
+
+    # Rewrite URLs in Markdown.
+    for orig_url, local_rel in downloaded.items():
+        md_content = md_content.replace(orig_url, local_rel)
+
+    if downloaded:
+        print(f"    [images] {len(downloaded)}/{len(matches)} saved")
+
+    return md_content
+
+
+# ---------------------------------------------------------------------------
+# Incremental crawl support
+# ---------------------------------------------------------------------------
+
+
+def _load_crawl_meta(output_dir: Path) -> dict[str, dict]:
+    """Load ``_crawl_meta.json`` from output directory."""
+    meta_path = output_dir / "_crawl_meta.json"
+    if not meta_path.is_file():
+        return {}
+    try:
+        return json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_crawl_meta(output_dir: Path, meta: dict[str, dict]) -> None:
+    """Write ``_crawl_meta.json`` to output directory."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    meta_path = output_dir / "_crawl_meta.json"
+    tmp = meta_path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(meta_path)
+
+
+def _clean_stale_pages(output_dir: Path, old_meta: dict[str, dict],
+                       new_ids: set[str]) -> int:
+    """Remove .md files and _images dirs for pages no longer in the tree."""
+    removed = 0
+    for page_id, info in old_meta.items():
+        if page_id in new_ids:
+            continue
+        path_str = info.get("path", "")
+        if not path_str:
+            continue
+        md_path = output_dir / path_str
+        if md_path.is_file():
+            md_path.unlink()
+            removed += 1
+            print(f"  [stale] removed {path_str}")
+        # Also remove sibling _images dir
+        imgs = md_path.with_name("_images")
+        if imgs.is_dir():
+            shutil.rmtree(imgs)
+    return removed
+
+
 def sanitize_filename(name: str) -> str:
     """Make a string safe for use as a filename."""
     name = re.sub(r'[<>:"/\\|?*]', "_", name)
@@ -454,10 +667,16 @@ def crawl_page(
     depth: int = 0,
     max_depth: int = 10,
     visited: set | None = None,
+    download_images: bool = True,
+    crawl_meta: dict[str, dict] | None = None,
 ) -> int:
     """Recursively crawl a page and its children, saving as Markdown.
 
-    Returns the number of pages saved.
+    When ``crawl_meta`` is provided (incremental mode), pages whose
+    version has not changed are skipped — conversion and image download
+    are bypassed — but children are still recursed.
+
+    Returns the number of pages newly written (not skipped).
     """
     if visited is None:
         visited = set()
@@ -476,25 +695,61 @@ def crawl_page(
         print(f"  [ERROR] Failed to fetch page {page_id}: {e}")
         return 0
 
+    if page is None:
+        print(f"  [WARN] Page {page_id} returned None from API")
+        return 0
+
     title = page.get("title", f"page_{page_id}")
-    # Sanitize for Windows console (cp1252 can't handle zero-width spaces, emoji, etc.)
     safe_title = title.encode("cp1252", errors="replace").decode("cp1252")
     indent = "  " * depth
+    safe_name = sanitize_filename(title)
+    md_path = output_dir / f"{safe_name}.md"
+
+    # --- incremental skip logic ---
+    version = page.get("version", {}).get("number", 0)
+    if crawl_meta is not None:
+        prev = crawl_meta.get(page_id)
+        if prev and prev.get("version") == version and md_path.is_file():
+            print(f"{indent}[{depth}] {safe_title} (unchanged)")
+            # Still record for stale check.
+            crawl_meta[page_id] = {"title": title, "version": version,
+                                   "path": str(md_path.relative_to(output_dir))}
+            count = 0
+            # Recurse children even though this page didn't change.
+            children = client.get_child_pages(page_id)
+            if children:
+                child_dir = output_dir / safe_name
+                for child in children:
+                    child_id = child["id"]
+                    count += crawl_page(
+                        client, child_id, child_dir,
+                        depth=depth + 1, max_depth=max_depth, visited=visited,
+                        download_images=download_images, crawl_meta=crawl_meta,
+                    )
+            return count
+
     print(f"{indent}[{depth}] {safe_title}")
 
-    # Convert HTML → Markdown
+    # --- full processing ---
     html_body = page.get("body", {}).get("storage", {}).get("value", "")
     if html_body:
-        md_content = html_to_markdown(html_body, title)
+        md_content = html_to_markdown(
+            html_body, title, page_id=page_id, base_url=client.base_url,
+        )
     else:
         md_content = f"# {title}\n\n*(empty page)*"
 
-    # Save to file
-    safe_name = sanitize_filename(title)
     output_dir.mkdir(parents=True, exist_ok=True)
-    md_path = output_dir / f"{safe_name}.md"
+    if download_images and html_body:
+        md_content = _download_page_images(client, page_id, md_content, output_dir)
+
     md_path.write_text(md_content, encoding="utf-8")
     count = 1
+
+    # Record in crawl meta.
+    if crawl_meta is not None:
+        crawl_meta[page_id] = {"title": title, "version": version,
+                               "path": str(md_path.relative_to(output_dir))}
 
     # Crawl children
     children = client.get_child_pages(page_id)
@@ -505,6 +760,8 @@ def crawl_page(
             count += crawl_page(
                 client, child_id, child_dir,
                 depth=depth + 1, max_depth=max_depth, visited=visited,
+                download_images=download_images,
+                crawl_meta=crawl_meta,
             )
 
     return count
@@ -530,6 +787,10 @@ def main():
                         help="Confluence username (prompts if not given)")
     parser.add_argument("-p", "--password", default=None,
                         help="Confluence password (prompts if not given)")
+    parser.add_argument("--no-images", action="store_true",
+                        help="Skip downloading attachment images")
+    parser.add_argument("--incremental", action="store_true",
+                        help="Incremental: skip pages whose version hasn't changed")
     args = parser.parse_args()
 
     # Parse URL
@@ -565,11 +826,30 @@ def main():
     print(f"Found page ID: {page_id}")
     print(f"Output: {args.output}")
     print(f"Max depth: {args.depth}")
+    if args.incremental:
+        print("Mode: incremental (skipping unchanged pages)")
     print()
 
     # Crawl
     output_dir = Path(args.output)
-    count = crawl_page(client, page_id, output_dir, max_depth=args.depth)
+    crawl_meta: dict[str, dict] | None = None
+
+    if args.incremental:
+        old_meta = _load_crawl_meta(output_dir)
+        crawl_meta = {}  # will be populated during crawl
+
+    count = crawl_page(
+        client, page_id, output_dir, max_depth=args.depth,
+        download_images=not args.no_images,
+        crawl_meta=crawl_meta,
+    )
+
+    # Post-crawl: save meta and clean stale pages
+    if crawl_meta is not None and count >= 0:
+        stale = _clean_stale_pages(output_dir, old_meta, set(crawl_meta.keys()))
+        if stale:
+            print(f"  Cleaned {stale} stale page(s)")
+        _save_crawl_meta(output_dir, crawl_meta)
 
     print()
     print(f"Done! Saved {count} page(s) to {output_dir}")

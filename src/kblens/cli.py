@@ -672,6 +672,20 @@ def _generate_one_source(config: Config, dry_run: bool) -> None:
             parts.append(f"[red]{len(deleted_keys)} deleted[/red]")
         console.print(f"  Change detection: {', '.join(parts)}")
 
+    for key in sorted(changed_keys):
+        plog.component_changed(key)
+    for key in sorted(failed_keys):
+        plog.component_retrying(key)
+
+    if changed_keys:
+        sample = ", ".join(sorted(changed_keys)[:10])
+        suffix = " ..." if len(changed_keys) > 10 else ""
+        console.print(f"  Changed sample: [yellow]{sample}{suffix}[/yellow]")
+    if failed_keys:
+        sample = ", ".join(sorted(failed_keys)[:10])
+        suffix = " ..." if len(failed_keys) > 10 else ""
+        console.print(f"  Retrying sample: [red]{sample}{suffix}[/red]")
+
     # ---- Cleanup deleted components ----
     if deleted_keys:
         deleted_list = cleanup_deleted_components(

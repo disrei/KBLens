@@ -115,6 +115,26 @@ def strip_ast_section(text: str) -> str:
     return text
 
 
+_ASSET_DIRS = frozenset({"_images"})
+
+
+def _copy_asset_dirs(source_path: Path, output_dir: Path) -> None:
+    """Copy asset directories (e.g. ``_images/``) from source to KB output.
+
+    This keeps image references in Markdown resolvable.  Only copies
+    directories listed in ``_ASSET_DIRS`` that exist in *source_path*.
+    """
+    for dirname in _ASSET_DIRS:
+        src = source_path / dirname
+        if not src.is_dir():
+            continue
+        dst = output_dir / dirname
+        if dst.exists():
+            shutil.rmtree(dst)
+        shutil.copytree(src, dst)
+        logger.debug("Copied %s → %s", src, dst)
+
+
 def write_component_incremental(config: Config, cr: ComponentResult) -> None:
     """Write a single component's Markdown immediately after it is generated.
 
@@ -173,6 +193,11 @@ def write_component_incremental(config: Config, cr: ComponentResult) -> None:
                     sub_text, cr.submodule_ast.get(sub_name, ""), cr.detected_language
                 )
                 _write_file(sub_dir / _leaf_output_name(sub_name), combined)
+
+    # Copy asset directories (_images/, etc.) from source to KB output so
+    # that image references in the Markdown remain resolvable.
+    if comp.path.is_dir():
+        _copy_asset_dirs(comp.path, pkg_comp_dir)
 
 
 # Lock for thread-safe meta updates (asyncio tasks may write concurrently)
@@ -272,7 +297,17 @@ def is_component_done(
     if not old_hash:
         return False
     current_hash = compute_source_hash(comp_path, include_exts, exclude_patterns)
-    return old_hash == current_hash
+    if old_hash == current_hash:
+        return True
+
+    # Fast hash changed. If we have a stored content hash, confirm whether the
+    # underlying file bytes actually changed before forcing a regeneration.
+    old_content_hash = existing.get("content_hash", "")
+    if not old_content_hash:
+        return False
+
+    current_content_hash = compute_source_content_hash(comp_path, include_exts, exclude_patterns)
+    return old_content_hash == current_content_hash
 
 
 # ---------------------------------------------------------------------------
@@ -366,7 +401,7 @@ def compute_source_hash(
     include_exts: set[str] | None = None,
     exclude_patterns: list[str] | None = None,
 ) -> str:
-    """Compute a hash based on file relative-path + mtime + size.
+    """Compute a fast hash based on file relative-path + mtime + size.
 
     When *include_exts* is given, only files with matching extensions are
     included in the hash.  When *exclude_patterns* is given, files matching
@@ -388,6 +423,37 @@ def compute_source_hash(
     except (OSError, PermissionError):
         pass
     return hashlib.md5("\n".join(parts).encode()).hexdigest()
+
+
+def compute_source_content_hash(
+    comp_path: Path,
+    include_exts: set[str] | None = None,
+    exclude_patterns: list[str] | None = None,
+) -> str:
+    """Compute a stable hash based on file relative-path + file content."""
+    from .scanner import _matches_exclude
+
+    digest = hashlib.md5()
+    try:
+        for f in sorted(comp_path.rglob("*")):
+            if f.is_file():
+                if include_exts and f.suffix.lower() not in include_exts:
+                    continue
+                rel = str(f.relative_to(comp_path)).replace("\\", "/")
+                if exclude_patterns and _matches_exclude(rel, exclude_patterns):
+                    continue
+                digest.update(rel.encode("utf-8"))
+                digest.update(b"\0")
+                with open(f, "rb") as fh:
+                    while True:
+                        chunk = fh.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        digest.update(chunk)
+                digest.update(b"\0")
+    except (OSError, PermissionError):
+        pass
+    return digest.hexdigest()
 
 
 def build_component_meta(
@@ -418,6 +484,9 @@ def build_component_meta(
             },
             "last_updated": datetime.now(timezone.utc).isoformat(),
             "source_hash": compute_source_hash(comp.path, include_exts, exclude_patterns),
+            "content_hash": compute_source_content_hash(
+                comp.path, include_exts, exclude_patterns
+            ),
         }
     if has_empty:
         logger.warning("Component %s has empty submodule summaries, marking as partial", comp.key)
@@ -433,6 +502,7 @@ def build_component_meta(
         },
         "last_updated": datetime.now(timezone.utc).isoformat(),
         "source_hash": compute_source_hash(comp.path, include_exts, exclude_patterns),
+        "content_hash": compute_source_content_hash(comp.path, include_exts, exclude_patterns),
     }
 
 
