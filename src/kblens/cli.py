@@ -88,6 +88,7 @@ from .writer import (
     compute_source_hash,
     is_component_done,
     load_meta,
+    migrate_component_assets,
     save_meta,
     save_meta_component,
     save_meta_failed,
@@ -547,6 +548,86 @@ def generate(
         raise typer.Exit(1)
 
     _run_generate(config, source=source, dry_run=dry_run)
+
+
+@app.command("migrate-doc-assets")
+def migrate_doc_assets(
+    config_path: str = typer.Option(
+        None, "--config", "-c", help="Config file path (default: auto-detect)"
+    ),
+    source: str = typer.Option(
+        None, "--source", "-s", help="Only migrate this document source name"
+    ),
+) -> None:
+    """Migrate legacy document image refs to component-scoped KB assets."""
+    try:
+        config = load_config(config_path)
+    except Exception as e:
+        console.print(f"[red]Error loading config:[/red] {e}")
+        raise typer.Exit(1)
+
+    sources_to_run = [s for s in config.source_dirs if s.type == "document"]
+    if source:
+        sources_to_run = [s for s in sources_to_run if s.name == source]
+    if not sources_to_run:
+        console.print("[red]No matching document sources found.[/red]")
+        raise typer.Exit(1)
+
+    total_components = 0
+    total_files = 0
+
+    for src_dir in sources_to_run:
+        src_output_dir = Path(config.output_dir).expanduser().resolve() / src_dir.name
+        meta_path = src_output_dir / "_meta.json"
+        if not meta_path.is_file():
+            console.print(f"[yellow]Skipping {src_dir.name}: _meta.json not found.[/yellow]")
+            continue
+
+        meta = load_meta(src_output_dir)
+        components_meta = meta.get("components", {})
+        source_root = Path(src_dir.path).expanduser().resolve()
+        package_root = src_output_dir / src_dir.name
+        migrated_components = 0
+        rewritten_files = 0
+
+        for comp_key, comp_meta in components_meta.items():
+            comp_path_str = comp_meta.get("path", "")
+            if not comp_path_str:
+                continue
+            comp_path = Path(comp_path_str)
+            parts = comp_key.split("/", 2)
+            if len(parts) != 3:
+                continue
+            _, package_name, component_name = parts
+            comp_name_safe = component_name.replace("/", "_")
+            package_dir = package_root / package_name
+
+            markdown_paths: list[Path] = []
+            top_md = package_dir / f"{comp_name_safe}.md"
+            if top_md.is_file():
+                markdown_paths.append(top_md)
+            leaf_dir = package_dir / comp_name_safe
+            if leaf_dir.is_dir():
+                markdown_paths.extend(sorted(leaf_dir.rglob("*.md")))
+
+            if not markdown_paths:
+                continue
+
+            rewritten = migrate_component_assets(comp_path, package_dir, comp_name_safe, markdown_paths)
+            migrated_components += 1
+            rewritten_files += rewritten
+
+        total_components += migrated_components
+        total_files += rewritten_files
+        console.print(
+            f"[green]{src_dir.name}[/green]: migrated {migrated_components} components, "
+            f"rewrote {rewritten_files} markdown files"
+        )
+
+    console.print(
+        f"[bold green]Done[/bold green]: migrated {total_components} components, "
+        f"rewrote {total_files} markdown files"
+    )
 
 
 def _run_generate(config: Config, source: str | None, dry_run: bool) -> None:

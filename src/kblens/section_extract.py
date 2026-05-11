@@ -31,6 +31,7 @@ _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
 
 # Regex matching Markdown image references: ![alt](path) or ![alt](path "title")
 _IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+_ASSET_PLACEHOLDER_PREFIX = "__kblens_asset__/"
 
 
 # ---------------------------------------------------------------------------
@@ -153,11 +154,25 @@ def process_images(content: str, handling: str = "reference") -> str:
     if handling == "ignore":
         return _IMAGE_RE.sub("", content)
 
-    # handling == "reference": keep ![alt](path) as-is.
-    # Images are preserved in the Markdown so they appear in the
-    # "Original Content" section of the knowledge base output and can
-    # be rendered by ``kblens serve``.
-    return content
+    # handling == "reference": rewrite local image refs to an internal
+    # placeholder path. Writer resolves that placeholder against the final
+    # output file location so flattened KB filenames still point at the
+    # correct component-scoped assets directory.
+    def _rewrite(match: re.Match[str]) -> str:
+        alt = match.group(1)
+        raw_path = match.group(2).strip()
+        lower = raw_path.lower()
+        if (
+            raw_path.startswith(("/", "#"))
+            or lower.startswith(("http://", "https://", "data:", "file:"))
+        ):
+            return match.group(0)
+        norm = raw_path.replace("\\", "/")
+        while norm.startswith("./"):
+            norm = norm[2:]
+        return f"![{alt}]({_ASSET_PLACEHOLDER_PREFIX}{norm})"
+
+    return _IMAGE_RE.sub(_rewrite, content)
 
 
 # ---------------------------------------------------------------------------

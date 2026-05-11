@@ -9,6 +9,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import re
 import shutil
 import threading
 from datetime import datetime, timezone
@@ -116,23 +118,110 @@ def strip_ast_section(text: str) -> str:
 
 
 _ASSET_DIRS = frozenset({"_images"})
+_ASSET_PLACEHOLDER_PREFIX = "__kblens_asset__/"
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 
 
-def _copy_asset_dirs(source_path: Path, output_dir: Path) -> None:
-    """Copy asset directories (e.g. ``_images/``) from source to KB output.
+def _rewrite_asset_placeholders(text: str, md_path: Path, asset_dir: Path) -> str:
+    """Resolve internal asset placeholders to paths relative to *md_path*."""
+    marker = f"({_ASSET_PLACEHOLDER_PREFIX}"
+    if marker not in text:
+        return text
+
+    rel_prefix = os.path.relpath(asset_dir, md_path.parent).replace("\\", "/")
+    if rel_prefix == ".":
+        rel_prefix = ""
+
+    def _replace(match: re.Match[str]) -> str:
+        rel_asset = match.group(1)
+        target = f"{rel_prefix}/{rel_asset}" if rel_prefix else rel_asset
+        return f"({target})"
+
+    return re.sub(r"\(__kblens_asset__/([^)]+)\)", _replace, text)
+
+
+def rewrite_legacy_asset_refs(text: str, md_path: Path, asset_dir: Path) -> str:
+    """Rewrite legacy ``_images/...`` refs to the component asset directory."""
+    rel_prefix = os.path.relpath(asset_dir, md_path.parent).replace("\\", "/")
+    if rel_prefix == ".":
+        rel_prefix = ""
+
+    def _replace(match: re.Match[str]) -> str:
+        alt = match.group(1)
+        raw_path = match.group(2).strip().replace("\\", "/")
+        if not raw_path.startswith("_images/"):
+            return match.group(0)
+        target = f"{rel_prefix}/{raw_path}" if rel_prefix else raw_path
+        return f"![{alt}]({target})"
+
+    return _MARKDOWN_IMAGE_RE.sub(_replace, text)
+
+
+def _component_asset_dir(
+    pkg_comp_dir: Path,
+    comp_name_safe: str,
+    batch_count: int,
+    file_count: int,
+    threshold: int,
+) -> Path:
+    """Return the component-scoped asset directory in KB output."""
+    if batch_count <= 1 and file_count < threshold:
+        return pkg_comp_dir / "__assets" / comp_name_safe
+    return pkg_comp_dir / comp_name_safe / "__assets"
+
+
+def _copy_component_assets(source_path: Path, asset_dir: Path) -> None:
+    """Copy component-local asset directories into a component-scoped asset root.
 
     This keeps image references in Markdown resolvable.  Only copies
-    directories listed in ``_ASSET_DIRS`` that exist in *source_path*.
+    directories listed in ``_ASSET_DIRS`` that exist directly under
+    *source_path*.
     """
+    if asset_dir.exists():
+        shutil.rmtree(asset_dir)
+
+    copied = False
     for dirname in _ASSET_DIRS:
         src = source_path / dirname
         if not src.is_dir():
             continue
-        dst = output_dir / dirname
-        if dst.exists():
-            shutil.rmtree(dst)
+        dst = asset_dir / dirname
         shutil.copytree(src, dst)
         logger.debug("Copied %s → %s", src, dst)
+        copied = True
+
+    if not copied and asset_dir.exists():
+        shutil.rmtree(asset_dir)
+
+
+def migrate_component_assets(
+    source_path: Path,
+    package_dir: Path,
+    comp_name_safe: str,
+    markdown_paths: list[Path],
+) -> int:
+    """Migrate legacy component markdown and assets to component-scoped layout.
+
+    Returns the number of rewritten markdown files.
+    """
+    is_large = (package_dir / comp_name_safe).is_dir()
+    asset_dir = (
+        package_dir / comp_name_safe / "__assets"
+        if is_large
+        else package_dir / "__assets" / comp_name_safe
+    )
+    _copy_component_assets(source_path, asset_dir)
+
+    rewritten = 0
+    for md_path in markdown_paths:
+        if not md_path.is_file():
+            continue
+        original = md_path.read_text(encoding="utf-8")
+        updated = rewrite_legacy_asset_refs(original, md_path, asset_dir)
+        if updated != original:
+            md_path.write_text(updated, encoding="utf-8")
+            rewritten += 1
+    return rewritten
 
 
 def write_component_incremental(config: Config, cr: ComponentResult) -> None:
@@ -145,12 +234,24 @@ def write_component_incremental(config: Config, cr: ComponentResult) -> None:
     pkg_comp_dir = out / comp.source_name / comp.package_name
     comp_name_safe = comp.name.replace("/", "_")
     threshold = config.packing.component_split_threshold
+    asset_dir = _component_asset_dir(
+        pkg_comp_dir,
+        comp_name_safe,
+        cr.batch_count,
+        comp.file_count,
+        threshold,
+    )
+
+    def _write_component_file(path: Path, content: str) -> None:
+        _write_file(path, _rewrite_asset_placeholders(content, path, asset_dir))
 
     if cr.batch_count <= 1 and comp.file_count < threshold:
         # Small component -> single .md
         content = cr.overview
         if cr.skipped_reason and not cr.submodule_summaries and not cr.submodule_ast:
-            _write_file(pkg_comp_dir / f"{comp_name_safe}.md", content)
+            _write_component_file(pkg_comp_dir / f"{comp_name_safe}.md", content)
+            if comp.path.is_dir():
+                _copy_component_assets(comp.path, asset_dir)
             return
         # Only append submodule summaries if Phase 5b was NOT skipped
         # (when Phase 5b is skipped, overview already contains the leaf content)
@@ -179,10 +280,10 @@ def write_component_incremental(config: Config, cr: ComponentResult) -> None:
                     "Component %s has summaries but no AST content to append",
                     comp.key,
                 )
-        _write_file(pkg_comp_dir / f"{comp_name_safe}.md", content)
+        _write_component_file(pkg_comp_dir / f"{comp_name_safe}.md", content)
     else:
         # Large component -> overview + submodule directory
-        _write_file(pkg_comp_dir / f"{comp_name_safe}.md", cr.overview)
+        _write_component_file(pkg_comp_dir / f"{comp_name_safe}.md", cr.overview)
         if cr.submodule_summaries:
             sub_dir = pkg_comp_dir / comp_name_safe
             for sub_name, sub_text in sorted(cr.submodule_summaries.items()):
@@ -192,12 +293,12 @@ def write_component_incremental(config: Config, cr: ComponentResult) -> None:
                 combined = _append_ast_section(
                     sub_text, cr.submodule_ast.get(sub_name, ""), cr.detected_language
                 )
-                _write_file(sub_dir / _leaf_output_name(sub_name), combined)
+                _write_component_file(sub_dir / _leaf_output_name(sub_name), combined)
 
     # Copy asset directories (_images/, etc.) from source to KB output so
     # that image references in the Markdown remain resolvable.
     if comp.path.is_dir():
-        _copy_asset_dirs(comp.path, pkg_comp_dir)
+        _copy_component_assets(comp.path, asset_dir)
 
 
 # Lock for thread-safe meta updates (asyncio tasks may write concurrently)
