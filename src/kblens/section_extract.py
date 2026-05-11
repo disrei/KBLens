@@ -144,8 +144,9 @@ def process_images(content: str, handling: str = "reference") -> str:
 
     Args:
         content: Markdown text.
-        handling: ``"reference"`` keeps ``![alt](path)`` image syntax intact
-                  so downstream renderers (kblens serve) can display images;
+        handling: ``"reference"`` rewrites local image refs to internal
+                  ``__kblens_asset__`` placeholders that the writer resolves
+                  against the component-scoped asset directory;
                   ``"ignore"`` removes image references entirely.
 
     Returns:

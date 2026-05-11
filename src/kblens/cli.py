@@ -585,7 +585,6 @@ def migrate_doc_assets(
 
         meta = load_meta(src_output_dir)
         components_meta = meta.get("components", {})
-        source_root = Path(src_dir.path).expanduser().resolve()
         package_root = src_output_dir / src_dir.name
         migrated_components = 0
         rewritten_files = 0

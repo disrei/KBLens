@@ -43,7 +43,7 @@ def test_write_component_incremental_rewrites_doc_asset_refs(tmp_path: Path) -> 
 
     output_md = tmp_path / "kb" / "ovr-confluence" / "OVR_Home" / "GAME_CONTENT.md"
     text = output_md.read_text(encoding="utf-8")
-    assert "![]("
+    assert "_images/diagram.png" in text
     assert "../__assets/GAME_CONTENT/_images/diagram.png" in text or "__assets/GAME_CONTENT/_images/diagram.png" in text
     asset_file = (
         tmp_path
@@ -93,7 +93,8 @@ def test_migrate_doc_assets_rewrites_existing_kb(tmp_path: Path, monkeypatch) ->
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(cli, "console", cli.Console(file=open(Path(tmp_path / "console.txt"), "w", encoding="utf-8")))
+    _console_fh = open(Path(tmp_path / "console.txt"), "w", encoding="utf-8")
+    monkeypatch.setattr(cli, "console", cli.Console(file=_console_fh))
     result = runner.invoke(
         cli.app,
         ["migrate-doc-assets", "--config", str(config_path), "--source", "ovr-confluence"],
