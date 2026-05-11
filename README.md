@@ -144,6 +144,18 @@ kblens generate
 
 For a project with ~200 components, expect ~5 minutes and ~400K input tokens.
 
+### 3.1 Add Current Directory Quickly
+
+```bash
+kblens add-kb
+```
+
+This command adds the current working directory into `~/.config/kblens/config.yaml` and immediately generates that directory's knowledge base.
+
+- If the current directory is not in the config yet, KBLens appends it under `sources` and runs generation for that source only.
+- If the current directory already exists in the config, KBLens tells you and runs an incremental update for that source.
+- If the global config file does not exist yet, KBLens creates one automatically with a default `output_dir` of `~/kblens_kb`.
+
 ### 4. Use
 
 The generated knowledge base is a directory of Markdown files. You can:
@@ -435,6 +447,7 @@ kblens generate                    # Generate all sources
 kblens generate --source core      # Generate only the "core" source
 kblens generate --dry-run          # Preview without LLM calls
 kblens generate --config ./my.yaml # Use specific config file
+kblens add-kb                      # Add current directory and generate/update it
 kblens serve                       # Browse KB in browser (auto-detect from env)
 kblens serve --kb ./output         # Browse a specific KB directory
 kblens serve --kb ./code --kb ./docs  # Browse multiple KBs together

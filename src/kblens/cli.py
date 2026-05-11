@@ -52,6 +52,7 @@ from .config import (
     USER_CONFIG_DIR,
     USER_CONFIG_FILE,
     find_config_file,
+    load_raw_config,
     load_config,
     require_api_key,
 )
@@ -59,6 +60,7 @@ from .models import (
     ComponentResult,
     Config,
     PackageResult,
+    SourceDir,
 )
 from .packer import phase3_pack
 from .progress import ProgressLog
@@ -536,6 +538,12 @@ def generate(
         console.print("[red]No source directories configured. Check 'sources' in config.[/red]")
         raise typer.Exit(1)
 
+    _run_generate(config, source=source, dry_run=dry_run)
+
+
+def _run_generate(config: Config, source: str | None, dry_run: bool) -> None:
+    """Run generation for a loaded config, optionally filtered by source."""
+
     # Filter sources if --source is specified
     sources_to_run = config.source_dirs
     if source:
@@ -589,6 +597,165 @@ def generate(
     if not dry_run:
         _set_kb_env_var(config.output_dir)
         console.print("Browse in browser: [cyan]kblens serve[/cyan]")
+
+
+def _normalize_source_name(name: str) -> str:
+    cleaned = "".join(ch.lower() if ch.isalnum() else "-" for ch in name).strip("-")
+    return cleaned or "current-dir"
+
+
+def _make_unique_source_name(preferred: str, existing_sources: list[dict]) -> str:
+    existing_names = {str(item.get("name", "")).strip() for item in existing_sources}
+    if preferred not in existing_names:
+        return preferred
+
+    idx = 2
+    while f"{preferred}-{idx}" in existing_names:
+        idx += 1
+    return f"{preferred}-{idx}"
+
+
+def _source_block_lines(path: str, name: str) -> list[str]:
+    return [f"  - path: {json.dumps(path)}", f"    name: {json.dumps(name)}"]
+
+
+def _append_source_to_config_text(text: str, key: str, path: str, name: str) -> str:
+    lines = text.splitlines()
+    block = _source_block_lines(path, name)
+
+    key_idx = None
+    for idx, line in enumerate(lines):
+        if line.startswith(f"{key}:"):
+            key_idx = idx
+            break
+
+    if key_idx is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend([f"{key}:", *block])
+        return "\n".join(lines) + "\n"
+
+    insert_at = key_idx + 1
+    while insert_at < len(lines):
+        line = lines[insert_at]
+        stripped = line.strip()
+        if not stripped:
+            insert_at += 1
+            continue
+        if line[:1].isspace():
+            insert_at += 1
+            continue
+        break
+
+    lines[insert_at:insert_at] = block
+    return "\n".join(lines) + "\n"
+
+
+def _write_minimal_user_config(path: Path, cwd_resolved: str, source_name: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = (
+        "version: 1\n"
+        f"output_dir: {json.dumps(str((Path.home() / 'kblens_kb').resolve()))}\n"
+        "sources:\n"
+        f"  - path: {json.dumps(cwd_resolved)}\n"
+        f"    name: {json.dumps(source_name)}\n"
+    )
+    path.write_text(content, encoding="utf-8")
+
+
+def _ensure_current_dir_source_in_user_config(cwd: Path) -> tuple[str, bool]:
+    """Add current directory to user config if missing.
+
+    Returns (source_name, already_exists).
+    """
+    raw_config = load_raw_config(USER_CONFIG_FILE) if USER_CONFIG_FILE.exists() else {}
+    raw_sources = raw_config.get("sources")
+    if raw_sources is None:
+        raw_sources = raw_config.get("source_dirs")
+    if not isinstance(raw_sources, list):
+        raw_sources = []
+
+    cwd_resolved = str(cwd.resolve())
+    for item in raw_sources:
+        if not isinstance(item, dict):
+            continue
+        raw_path = item.get("path")
+        if not raw_path:
+            continue
+        try:
+            existing_path = str(Path(os.path.expandvars(os.path.expanduser(str(raw_path)))).resolve())
+        except Exception:
+            continue
+        if existing_path == cwd_resolved:
+            source_name = str(item.get("name") or cwd.name or "current-dir")
+            return source_name, True
+
+    if not raw_config:
+        source_name = _normalize_source_name(cwd.name)
+        _write_minimal_user_config(USER_CONFIG_FILE, cwd_resolved, source_name)
+        return source_name, False
+
+    raw_sources = raw_config.get("sources")
+    source_key = "sources"
+    if not isinstance(raw_sources, list):
+        raw_sources = raw_config.get("source_dirs")
+        source_key = "source_dirs"
+    if not isinstance(raw_sources, list):
+        raw_sources = []
+        source_key = "sources"
+
+    source_name = _make_unique_source_name(_normalize_source_name(cwd.name), raw_sources)
+    original_text = USER_CONFIG_FILE.read_text(encoding="utf-8")
+    updated_text = _append_source_to_config_text(original_text, source_key, cwd_resolved, source_name)
+    USER_CONFIG_FILE.write_text(updated_text, encoding="utf-8")
+    return source_name, False
+
+
+@app.command("add-kb")
+def add_kb() -> None:
+    """Add current directory to config and generate or update its knowledge base."""
+    cwd = Path.cwd().resolve()
+
+    try:
+        source_name, already_exists = _ensure_current_dir_source_in_user_config(cwd)
+        config = load_config(None)
+    except Exception as e:
+        console.print(f"[red]Error preparing config:[/red] {e}")
+        raise typer.Exit(1)
+
+    matching_sources = [src for src in config.source_dirs if Path(src.path).resolve() == cwd]
+    selected_source = next((src for src in matching_sources if src.name == source_name), None)
+    if selected_source is None and matching_sources:
+        selected_source = matching_sources[0]
+    if selected_source is None:
+        selected_source = SourceDir(path=str(cwd), name=source_name)
+    config.source_dirs = [selected_source]
+
+    try:
+        require_api_key(config)
+    except ConfigError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+    if already_exists:
+        console.print(
+            f"[yellow]Current directory already exists in {USER_CONFIG_FILE}[/yellow]"
+            f" as source [cyan]{source_name}[/cyan]. Updating its knowledge base..."
+        )
+    else:
+        console.print(
+            f"[green]Added[/green] current directory to {USER_CONFIG_FILE} "
+            f"as source [cyan]{source_name}[/cyan]. Generating knowledge base..."
+        )
+    if selected_source.name != source_name:
+        console.print(
+            f"[dim]Using effective source from active config: {selected_source.name}[/dim]"
+        )
+    console.print(f"Directory:      {cwd}")
+    console.print(f"Config file:    {USER_CONFIG_FILE}")
+    console.print()
+
+    _run_generate(config, source=selected_source.name, dry_run=False)
 
 
 def _generate_one_source(config: Config, dry_run: bool) -> None:

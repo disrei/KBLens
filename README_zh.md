@@ -118,6 +118,18 @@ kblens generate
 
 200 个组件约需 5 分钟，消耗约 40 万输入 token。
 
+### 3.1 快速添加当前目录
+
+```bash
+kblens add-kb
+```
+
+这个命令会把当前工作目录加入 `~/.config/kblens/config.yaml`，然后立即为该目录生成知识库。
+
+- 如果当前目录尚未写入配置，KBLens 会把它追加到 `sources` 中，并且只生成这个 source。
+- 如果当前目录已经存在于配置中，KBLens 会提示用户，然后对这个 source 执行增量更新。
+- 如果全局配置文件还不存在，KBLens 会自动创建，并使用默认 `output_dir: ~/kblens_kb`。
+
 ### 4. 使用
 
 生成的知识库是一个 Markdown 文件目录，你可以：
@@ -207,6 +219,7 @@ kblens generate                    # 生成所有源
 kblens generate --source core      # 仅生成 "core" 源
 kblens generate --dry-run          # 预览，不调用 LLM
 kblens generate --config ./my.yaml # 使用指定配置文件
+kblens add-kb                      # 添加当前目录并生成/更新它
 kblens status                      # 显示知识库状态
 kblens monitor                     # 实时监控正在运行的生成进程
 kblens init                        # 交互式配置向导

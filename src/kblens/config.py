@@ -54,6 +54,11 @@ def _load_yaml(path: Path) -> dict:
         return yaml.safe_load(f) or {}
 
 
+def load_raw_config(path: Path) -> dict:
+    """Load raw YAML config data from disk."""
+    return _load_yaml(path)
+
+
 def _expand_path(p: str) -> str:
     """Expand ~ and environment variables in a path string."""
     return str(Path(os.path.expandvars(os.path.expanduser(p))).resolve())
