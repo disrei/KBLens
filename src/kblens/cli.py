@@ -612,7 +612,15 @@ def migrate_doc_assets(
             if not markdown_paths:
                 continue
 
-            rewritten = migrate_component_assets(comp_path, package_dir, comp_name_safe, markdown_paths)
+            rewritten = migrate_component_assets(
+                comp_path,
+                package_dir,
+                comp_name_safe,
+                markdown_paths,
+                batch_count=comp_meta.get("batch_count", 0),
+                file_count=comp_meta.get("file_count", 0),
+                threshold=config.packing.component_split_threshold,
+            )
             migrated_components += 1
             rewritten_files += rewritten
 

@@ -199,17 +199,15 @@ def migrate_component_assets(
     package_dir: Path,
     comp_name_safe: str,
     markdown_paths: list[Path],
+    batch_count: int = 0,
+    file_count: int = 0,
+    threshold: int = 200,
 ) -> int:
     """Migrate legacy component markdown and assets to component-scoped layout.
 
     Returns the number of rewritten markdown files.
     """
-    is_large = (package_dir / comp_name_safe).is_dir()
-    asset_dir = (
-        package_dir / comp_name_safe / "__assets"
-        if is_large
-        else package_dir / "__assets" / comp_name_safe
-    )
+    asset_dir = _component_asset_dir(package_dir, comp_name_safe, batch_count, file_count, threshold)
     _copy_component_assets(source_path, asset_dir)
 
     rewritten = 0
