@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from rich.progress import SpinnerColumn, TextColumn
 from typer.testing import CliRunner
 
 from kblens import cli
@@ -139,3 +140,27 @@ llm:
 
     saved = load_raw_config(user_config)
     assert sum(1 for item in saved["sources"] if item["name"] == "tracked-src") == 1
+
+
+def test_safe_spinner_column_falls_back_on_non_utf_windows(monkeypatch) -> None:
+    class _Stdout:
+        encoding = "cp1252"
+
+    monkeypatch.setattr(cli.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(cli.sys, "stdout", _Stdout())
+
+    column = cli._safe_spinner_column()
+
+    assert isinstance(column, TextColumn)
+
+
+def test_safe_spinner_column_keeps_spinner_on_utf_console(monkeypatch) -> None:
+    class _Stdout:
+        encoding = "utf-8"
+
+    monkeypatch.setattr(cli.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(cli.sys, "stdout", _Stdout())
+
+    column = cli._safe_spinner_column()
+
+    assert isinstance(column, SpinnerColumn)

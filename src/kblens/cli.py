@@ -228,6 +228,14 @@ app.add_typer(skill_app, name="skill")
 MIN_AST_TOKENS_FOR_LLM = 50
 
 
+def _safe_spinner_column() -> SpinnerColumn | TextColumn:
+    """Return a spinner that won't crash on non-UTF Windows consoles."""
+    encoding = (getattr(sys.stdout, "encoding", None) or "").lower()
+    if platform.system() == "Windows" and encoding and "utf" not in encoding:
+        return TextColumn("...")
+    return SpinnerColumn()
+
+
 def _render_skill_install_results(results: dict[str, str]) -> None:
     for target in AGENT_SKILL_TARGETS:
         if target.key not in results:
@@ -887,7 +895,7 @@ def _generate_one_source(config: Config, dry_run: bool) -> None:
     total_entries = 0
     to_extract = [c for c in components if c.key not in skip_keys]
     with Progress(
-        SpinnerColumn(),
+        _safe_spinner_column(),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(bar_width=30),
         MofNCompleteColumn(),
@@ -934,7 +942,7 @@ def _generate_one_source(config: Config, dry_run: bool) -> None:
     total_batches = 0
     agg_count = 0
     with Progress(
-        SpinnerColumn(),
+        _safe_spinner_column(),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(bar_width=30),
         MofNCompleteColumn(),
@@ -1286,7 +1294,7 @@ async def _run_summarization_live(
     ds.dirty_packages = len(dirty_packages)
 
     progress = Progress(
-        SpinnerColumn(),
+        _safe_spinner_column(),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(bar_width=30),
         MofNCompleteColumn(),
