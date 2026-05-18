@@ -36,3 +36,7 @@ test_doc_kb.yaml
 .DS_Store
 Thumbs.db
 nul
+.arts/settings.json
+.kanban/board.json
+.kanban/settings.json
+.kanban/sessions/2026-05-18/mpawreqy-n0ltb62.json
